@@ -13,9 +13,16 @@ echo -e "\033[38;5;111mSetting root password and locking root account...\033[0m"
 echo "root:__SETUP_ROOT_PASSWORD__" | chpasswd -e || echo "root:__SETUP_ROOT_PASSWORD__" | chpasswd # -e for encrypted
 passwd -l root # Lock root account
 
-echo -e "\033[38;5;111mCreating user __SETUP_USERNAME__...\033[0m"
-useradd -m -G wheel -s /bin/bash "__SETUP_USERNAME__"
-echo "__SETUP_USERNAME__:__SETUP_BAO_PASSWORD__" | chpasswd -e || echo "__SETUP_USERNAME__:__SETUP_BAO_PASSWORD__" | chpasswd
+echo -e "\033[38;5;111mCreating user __SETUP_USERNAME__ (if not exists)...\033[0m"
+# Check if user exists before trying to create. 'id -u' returns 0 if user exists.
+if ! id -u "__SETUP_USERNAME__" >/dev/null 2>&1; then
+    useradd -m -G wheel -s /bin/bash "__SETUP_USERNAME__"
+    echo "__SETUP_USERNAME__:__SETUP_BAO_PASSWORD__" | chpasswd -e || echo "__SETUP_USERNAME__:__SETUP_BAO_PASSWORD__" | chpasswd
+else
+    echo -e "\033[38;5;228mUser __SETUP_USERNAME__ already exists. Skipping creation, ensuring password is set.\033[0m"
+    # Ensure password is set even if user exists, in case previous attempt was interrupted.
+    echo "__SETUP_USERNAME__:__SETUP_BAO_PASSWORD__" | chpasswd -e || echo "__SETUP_USERNAME__:__SETUP_BAO_PASSWORD__" | chpasswd
+fi
 
 echo -e "\033[38;5;111mConfiguring systemd-boot (loader.conf configured pre-chroot)...\033[0m"
 bootctl --path=/boot/efi install # Installs systemd-boot to EFI partition

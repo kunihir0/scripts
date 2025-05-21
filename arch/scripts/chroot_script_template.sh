@@ -39,18 +39,77 @@ echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch
 
 
 echo -e "\033[38;5;111mPreparing for initramfs generation with dracut...\033[0m"
-INSTALLED_KERNEL_IMAGE="/boot/vmlinuz-linux-surface"
-if [ ! -f "$INSTALLED_KERNEL_IMAGE" ]; then
-    echo -e "\033[38;5;210mCRITICAL ERROR: Kernel image $INSTALLED_KERNEL_IMAGE not found! Cannot determine kver for dracut.\033[0m"
-    echo -e "\033[38;5;123mListing /boot/ for diagnostics:\033[0m"
+
+# Determine kernel version and paths
+KERNEL_PKG_NAME="linux-surface" # The package name we are targeting
+BOOT_VMLINUZ_TARGET_NAME="vmlinuz-${KERNEL_PKG_NAME}" # e.g., vmlinuz-linux-surface
+BOOT_KERNEL_TARGET_PATH="/boot/${BOOT_VMLINUZ_TARGET_NAME}"
+INITRAMFS_TARGET_PATH="/boot/initramfs-${KERNEL_PKG_NAME}.img"
+
+# Get full package version string (e.g., 6.14.2.arch1-1)
+KERNEL_PKG_INFO=$(pacman -Q "$KERNEL_PKG_NAME" 2>/dev/null)
+if [ -z "$KERNEL_PKG_INFO" ]; then
+    echo -e "\033[38;5;210mCRITICAL ERROR: Kernel package '$KERNEL_PKG_NAME' not found via pacman -Q.\033[0m"
+    exit 1
+fi
+KERNEL_VERSION_FULL=$(echo "$KERNEL_PKG_INFO" | cut -d' ' -f2) # e.g., "6.14.2.arch1-1"
+
+# Construct the expected kernel module directory path
+# This often matches the full version string for AUR kernels or custom kernels.
+KERNEL_MODULE_DIR_NAME="$KERNEL_VERSION_FULL"
+KERNEL_MODULES_PATH="/usr/lib/modules/$KERNEL_MODULE_DIR_NAME"
+KERNEL_IMAGE_SRC_IN_MODULES="$KERNEL_MODULES_PATH/vmlinuz" # Common name inside module dir
+
+echo -e "\033[38;5;123mExpected kernel version: $KERNEL_VERSION_FULL\033[0m"
+echo -e "\033[38;5;123mExpected module path: $KERNEL_MODULES_PATH\033[0m"
+echo -e "\033[38;5;123mExpected source vmlinuz: $KERNEL_IMAGE_SRC_IN_MODULES\033[0m"
+echo -e "\033[38;5;123mTarget vmlinuz in /boot: $BOOT_KERNEL_TARGET_PATH\033[0m"
+
+# Check if the target kernel image already exists in /boot
+if [ ! -f "$BOOT_KERNEL_TARGET_PATH" ]; then
+    echo -e "\033[38;5;228mKernel image $BOOT_KERNEL_TARGET_PATH not found directly in /boot.\033[0m"
+    # Check if the source directory and file exist in /usr/lib/modules
+    if [ -d "$KERNEL_MODULES_PATH" ]; then
+        if [ -f "$KERNEL_IMAGE_SRC_IN_MODULES" ]; then
+            echo -e "\033[38;5;121mFound kernel image at $KERNEL_IMAGE_SRC_IN_MODULES. Copying to $BOOT_KERNEL_TARGET_PATH...\033[0m"
+            cp -v "$KERNEL_IMAGE_SRC_IN_MODULES" "$BOOT_KERNEL_TARGET_PATH"
+        else
+            echo -e "\033[38;5;210mERROR: Kernel image $KERNEL_IMAGE_SRC_IN_MODULES not found within $KERNEL_MODULES_PATH.\033[0m"
+            echo -e "\033[38;5;123mListing contents of $KERNEL_MODULES_PATH for diagnostics:\033[0m"
+            ls -Alh "$KERNEL_MODULES_PATH" || echo -e "\033[38;5;216mCould not list $KERNEL_MODULES_PATH\033[0m"
+            exit 1
+        fi
+    else
+        echo -e "\033[38;5;210mERROR: Kernel modules directory $KERNEL_MODULES_PATH does not exist.\033[0m"
+        echo -e "\033[38;5;123mListing /usr/lib/modules/ for diagnostics:\033[0m"
+        ls -Alh /usr/lib/modules/ || echo -e "\033[38;5;216mCould not list /usr/lib/modules/\033[0m"
+        exit 1
+    fi
+else
+    echo -e "\033[38;5;156mKernel image $BOOT_KERNEL_TARGET_PATH already present in /boot.\033[0m"
+fi
+
+# Verify again that the target kernel image is now in /boot
+if [ ! -f "$BOOT_KERNEL_TARGET_PATH" ]; then
+    echo -e "\033[38;5;210mCRITICAL ERROR: Kernel image $BOOT_KERNEL_TARGET_PATH is STILL NOT FOUND in /boot after copy attempt. Cannot proceed.\033[0m"
     ls -Alh /boot/
     exit 1
 fi
+echo -e "\033[38;5;156mKernel image $BOOT_KERNEL_TARGET_PATH is ready in /boot.\033[0m"
 
-echo -e "\033[38;5;123mAttempting to generate initramfs for $INSTALLED_KERNEL_IMAGE...\033[0m"
-dracut --force --hostonly --no-hostonly-cmdline --kernel-image "$INSTALLED_KERNEL_IMAGE" "/boot/initramfs-linux-surface.img"
-echo -e "\033[38;5;121mInitramfs generation attempted.\033[0m"
+# Use the KERNEL_MODULE_DIR_NAME (which is KERNEL_VERSION_FULL) for dracut's --kver argument
+# Or, more robustly, point dracut to the kernel image file itself.
+echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $KERNEL_MODULE_DIR_NAME...\033[0m"
+# dracut --force --hostonly --no-hostonly-cmdline --kernel-image "$BOOT_KERNEL_TARGET_PATH" "$INITRAMFS_TARGET_PATH"
+# Using --kver is often more standard if the module directory name is correct and matches what dracut expects.
+dracut --force --hostonly --no-hostonly-cmdline --kver "$KERNEL_MODULE_DIR_NAME" "$INITRAMFS_TARGET_PATH"
 
+echo -e "\033[38;5;121mInitramfs generation attempted at $INITRAMFS_TARGET_PATH.\033[0m"
+
+# Update systemd-boot entry to use the correct initramfs name
+# (already done above if BOOT_VMLINUZ_TARGET_NAME and INITRAMFS_TARGET_PATH are consistent)
+# Ensure the entry file uses $INITRAMFS_TARGET_PATH (relative to /boot)
+# The cat << EOF_ARCH_ENTRY block above should use /initramfs-linux-surface.img which matches INITRAMFS_TARGET_PATH
 
 echo -e "\033[38;5;111mEnabling system services (GDM, NetworkManager, WirePlumber, Bluetooth, ZRAM)...\033[0m"
 systemctl enable gdm.service NetworkManager.service wireplumber.service bluetooth.service systemd-zram-setup@zram0.service

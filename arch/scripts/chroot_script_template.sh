@@ -62,12 +62,13 @@ fi
 KERNEL_VERSION_FULL=$(echo "$KERNEL_PKG_INFO" | cut -d' ' -f2) # e.g., "6.14.2.arch1-1"
 
 # Construct the expected kernel module directory path
-# This often matches the full version string for AUR kernels or custom kernels.
-KERNEL_MODULE_DIR_NAME="$KERNEL_VERSION_FULL"
+# For linux-surface, the module directory is typically KERNEL_VERSION_FULL + "-surface"
+# e.g., if KERNEL_VERSION_FULL is "6.14.2.arch1-1", the dir is "6.14.2.arch1-1-surface"
+KERNEL_MODULE_DIR_NAME="${KERNEL_VERSION_FULL}-surface"
 KERNEL_MODULES_PATH="/usr/lib/modules/$KERNEL_MODULE_DIR_NAME"
 KERNEL_IMAGE_SRC_IN_MODULES="$KERNEL_MODULES_PATH/vmlinuz" # Common name inside module dir
 
-echo -e "\033[38;5;123mExpected kernel version: $KERNEL_VERSION_FULL\033[0m"
+echo -e "\033[38;5;123mDerived kernel package version: $KERNEL_VERSION_FULL\033[0m"
 echo -e "\033[38;5;123mExpected module path: $KERNEL_MODULES_PATH\033[0m"
 echo -e "\033[38;5;123mExpected source vmlinuz: $KERNEL_IMAGE_SRC_IN_MODULES\033[0m"
 echo -e "\033[38;5;123mTarget vmlinuz in /boot: $BOOT_KERNEL_TARGET_PATH\033[0m"

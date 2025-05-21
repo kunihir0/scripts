@@ -63,42 +63,78 @@ if [ -z "$KERNEL_PKG_INFO" ]; then
 fi
 KERNEL_VERSION_FULL=$(echo "$KERNEL_PKG_INFO" | cut -d' ' -f2) # e.g., "6.14.2.arch1-1"
 
-# Construct the expected kernel module directory path
-# For linux-surface, the module directory is typically KERNEL_VERSION_FULL + "-surface"
-# e.g., if KERNEL_VERSION_FULL is "6.14.2.arch1-1", the dir is "6.14.2.arch1-1-surface"
-KERNEL_MODULE_DIR_NAME="${KERNEL_VERSION_FULL}-surface"
+# Dynamically find the kernel module directory path
+echo -e "\033[38;5;123mAttempting to dynamically find kernel module directory for version pattern $KERNEL_VERSION_FULL*-surface ...\033[0m"
+# Use ls -d with a wildcard. This should list the directory if it exists.
+# Capture the first line of output, remove trailing slash if present.
+# The glob should be specific enough for linux-surface.
+# Example: KERNEL_VERSION_FULL is "6.14.2.arch1-1"
+# We expect a directory like "/usr/lib/modules/6.14.2.arch1-1-surface" or "/usr/lib/modules/6.14.2-arch1-1-surface"
+# The glob needs to be robust to variations like '.' vs '-' in version strings if they occur.
+# Let's assume the KERNEL_VERSION_FULL from pacman is the most reliable part.
+# The suffix is known to be "-surface".
+# So, the pattern is KERNEL_VERSION_FULL followed by -surface.
+# The issue might be that KERNEL_VERSION_FULL itself can have hyphens.
+# Let's try to find a directory that *contains* KERNEL_VERSION_FULL and ends with -surface.
+# This is still tricky. The most reliable is the exact name if we trust the `ls` output.
+
+# Re-evaluate KERNEL_MODULE_DIR_NAME based on visual confirmation from logs
+# The logs show "6.14.2-arch1-1-surface"
+# KERNEL_VERSION_FULL was "6.14.2.arch1-1"
+# The difference is the dot vs hyphen. Let's try to replace dots with hyphens in KERNEL_VERSION_FULL for the dir name.
+KERNEL_VERSION_FOR_DIR=$(echo "$KERNEL_VERSION_FULL" | sed 's/\./-/g') # Replace dots with hyphens
+KERNEL_MODULE_DIR_NAME_ATTEMPT="${KERNEL_VERSION_FOR_DIR}-surface"
+# However, the log shows "6.14.2-arch1-1-surface" and KERNEL_VERSION_FULL is "6.14.2.arch1-1"
+# This implies the suffix is just "-surface" and the version string from pacman is mostly correct,
+# but the directory name might use hyphens where pacman version uses dots.
+# The previous construction KERNEL_MODULE_DIR_NAME="${KERNEL_VERSION_FULL}-surface" was based on this.
+# The problem is not the name, but accessing it.
+
+# Let's stick to the derived KERNEL_MODULE_DIR_NAME and KERNEL_MODULES_PATH
+KERNEL_MODULE_DIR_NAME="${KERNEL_VERSION_FULL}-surface" # This was correct based on ls output
 KERNEL_MODULES_PATH="/usr/lib/modules/$KERNEL_MODULE_DIR_NAME"
-KERNEL_IMAGE_SRC_IN_MODULES="$KERNEL_MODULES_PATH/vmlinuz" # Common name inside module dir
+KERNEL_IMAGE_SRC_IN_MODULES="$KERNEL_MODULES_PATH/vmlinuz"
 
 echo -e "\033[38;5;123mDerived kernel package version: $KERNEL_VERSION_FULL\033[0m"
-echo -e "\033[38;5;123mExpected module path: $KERNEL_MODULES_PATH\033[0m"
+echo -e "\033[38;5;123mConstructed module directory name: $KERNEL_MODULE_DIR_NAME\033[0m"
+echo -e "\033[38;5;123mFull module path: $KERNEL_MODULES_PATH\033[0m"
 echo -e "\033[38;5;123mExpected source vmlinuz: $KERNEL_IMAGE_SRC_IN_MODULES\033[0m"
 echo -e "\033[38;5;123mTarget vmlinuz in /boot: $BOOT_KERNEL_TARGET_PATH\033[0m"
 
-# Check if the target kernel image already exists in /boot
 if [ ! -f "$BOOT_KERNEL_TARGET_PATH" ]; then
     echo -e "\033[38;5;228mKernel image $BOOT_KERNEL_TARGET_PATH not found directly in /boot. Attempting to find and copy...\033[0m"
     
-    # Try to find the vmlinuz file using a find command, looking for the specific version and -surface suffix.
-    # This is more robust if the exact path construction has subtle issues.
-    # We search for a file named 'vmlinuz' inside a directory that matches the KERNEL_VERSION_FULL and ends with -surface.
-    # Example KERNEL_VERSION_FULL: 6.14.2.arch1-1
-    # Example actual dir: 6.14.2-arch1-1-surface (note the hyphen instead of dot sometimes)
-    # Let's try to match the pattern more generally.
-    # The KERNEL_MODULE_DIR_NAME is already "${KERNEL_VERSION_FULL}-surface"
-    
-    echo -e "\033[38;5;123mSearching for vmlinuz in /usr/lib/modules/$KERNEL_MODULE_DIR_NAME/ (looking for vmlinuz*)...\033[0m"
-    # Search for any file starting with vmlinuz within the specific kernel module directory
-    FOUND_VMLINUZ_PATH=$(find "/usr/lib/modules/${KERNEL_MODULE_DIR_NAME}/" -maxdepth 1 -type f -name "vmlinuz*" -print -quit 2>/dev/null)
-
-    if [ -n "$FOUND_VMLINUZ_PATH" ] && [ -f "$FOUND_VMLINUZ_PATH" ]; then
-        echo -e "\033[38;5;121mFound kernel image at $FOUND_VMLINUZ_PATH. Copying to $BOOT_KERNEL_TARGET_PATH...\033[0m"
-        cp -v "$FOUND_VMLINUZ_PATH" "$BOOT_KERNEL_TARGET_PATH"
-    else
-        echo -e "\033[38;5;210mERROR: Kernel vmlinuz file not found using find in expected module locations.\033[0m"
-        echo -e "\033[38;5;123mTried searching in paths like /usr/lib/modules/$KERNEL_MODULE_DIR_NAME/vmlinuz\033[0m"
-        echo -e "\033[38;5;123mListing all /usr/lib/modules/ for diagnostics:\033[0m"
+    # Check if the constructed KERNEL_MODULES_PATH actually exists and contains vmlinuz
+    # This is where it fails, despite ls /usr/lib/modules showing the directory.
+    # Let's try to list the specific directory first. If that fails, the -f check will also fail.
+    echo -e "\033[38;5;123mAttempting to list specific module directory: $KERNEL_MODULES_PATH\033[0m"
+    if ! ls -Alh "$KERNEL_MODULES_PATH" >/dev/null 2>&1; then
+        echo -e "\033[38;5;210mERROR: Cannot list/access kernel module directory at $KERNEL_MODULES_PATH directly.\033[0m"
+        echo -e "\033[38;5;123mListing all /usr/lib/modules/ for diagnostics (again):\033[0m"
         ls -Alh /usr/lib/modules/ || echo -e "\033[38;5;216mCould not list /usr/lib/modules/\033[0m"
+        # As a last resort, try to find any directory matching the version and -surface, then look for vmlinuz in it
+        # This is a bit risky if multiple matches occur, but we'll take the first.
+        echo -e "\033[38;5;123mTrying a broader find for the module directory itself...\033[0m"
+        RECOVERED_MODULE_PATH=$(find /usr/lib/modules/ -maxdepth 1 -type d -name "${KERNEL_VERSION_FULL}*-surface" -print -quit 2>/dev/null)
+        if [ -n "$RECOVERED_MODULE_PATH" ] && [ -d "$RECOVERED_MODULE_PATH" ]; then
+            echo -e "\033[38;5;228mRECOVERY: Found module directory via find: $RECOVERED_MODULE_PATH\033[0m"
+            KERNEL_MODULES_PATH="$RECOVERED_MODULE_PATH" # Override with found path
+            KERNEL_IMAGE_SRC_IN_MODULES="$KERNEL_MODULES_PATH/vmlinuz"
+            echo -e "\033[38;5;123mNew source vmlinuz: $KERNEL_IMAGE_SRC_IN_MODULES\033[0m"
+        else
+            echo -e "\033[38;5;210mRECOVERY FAILED: Broader find also failed to locate the module directory.\033[0m"
+            exit 1
+        fi
+    fi
+    
+    # Now check for the vmlinuz file within the (potentially recovered) KERNEL_MODULES_PATH
+    if [ -f "$KERNEL_IMAGE_SRC_IN_MODULES" ]; then
+        echo -e "\033[38;5;121mFound kernel image at $KERNEL_IMAGE_SRC_IN_MODULES. Copying to $BOOT_KERNEL_TARGET_PATH...\033[0m"
+        cp -v "$KERNEL_IMAGE_SRC_IN_MODULES" "$BOOT_KERNEL_TARGET_PATH"
+    else
+        echo -e "\033[38;5;210mERROR: Kernel vmlinuz file not found at $KERNEL_IMAGE_SRC_IN_MODULES even after checks/recovery.\033[0m"
+        echo -e "\033[38;5;123mFinal listing of $KERNEL_MODULES_PATH:\033[0m"
+        ls -Alh "$KERNEL_MODULES_PATH" || echo -e "\033[38;5;216mCould not list $KERNEL_MODULES_PATH.\033[0m"
         exit 1
     fi
 else
@@ -113,12 +149,12 @@ if [ ! -f "$BOOT_KERNEL_TARGET_PATH" ]; then
 fi
 echo -e "\033[38;5;156mKernel image $BOOT_KERNEL_TARGET_PATH is ready in /boot.\033[0m"
 
-# Use the KERNEL_MODULE_DIR_NAME (which is KERNEL_VERSION_FULL) for dracut's --kver argument
-# Or, more robustly, point dracut to the kernel image file itself.
-echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $KERNEL_MODULE_DIR_NAME...\033[0m"
-# dracut --force --hostonly --no-hostonly-cmdline --kernel-image "$BOOT_KERNEL_TARGET_PATH" "$INITRAMFS_TARGET_PATH"
-# Using --kver is often more standard if the module directory name is correct and matches what dracut expects.
-dracut --force --hostonly --no-hostonly-cmdline --kver "$KERNEL_MODULE_DIR_NAME" "$INITRAMFS_TARGET_PATH"
+# KERNEL_MODULE_DIR_NAME for dracut --kver should be the actual directory name found
+# If KERNEL_MODULES_PATH was updated by find, KERNEL_MODULE_DIR_NAME needs to be updated too.
+DRACUT_KVER=$(basename "$KERNEL_MODULES_PATH")
+
+echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $DRACUT_KVER...\033[0m"
+dracut --force --hostonly --no-hostonly-cmdline --kver "$DRACUT_KVER" "$INITRAMFS_TARGET_PATH"
 
 echo -e "\033[38;5;121mInitramfs generation attempted at $INITRAMFS_TARGET_PATH.\033[0m"
 

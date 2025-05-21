@@ -77,26 +77,18 @@ echo -e "\033[38;5;123mTarget vmlinuz in /boot: $BOOT_KERNEL_TARGET_PATH\033[0m"
 if [ ! -f "$BOOT_KERNEL_TARGET_PATH" ]; then
     echo -e "\033[38;5;228mKernel image $BOOT_KERNEL_TARGET_PATH not found directly in /boot.\033[0m"
     # Check if the source directory and file exist in /usr/lib/modules
-    echo -e "\033[38;5;123mChecking for existence of kernel modules directory. Path to check: [$KERNEL_MODULES_PATH]\033[0m"
-    # Using find to check for directory existence.
-    # -print -quit will make find exit after the first match and print it.
-    # We check if the output of find is non-empty.
-    FOUND_MODULE_PATH=$(find /usr/lib/modules -maxdepth 1 -type d -name "$KERNEL_MODULE_DIR_NAME" -print -quit 2>/dev/null)
-
-    if [ -n "$FOUND_MODULE_PATH" ] && [ "$FOUND_MODULE_PATH" = "$KERNEL_MODULES_PATH" ]; then
-        echo -e "\033[38;5;156mKernel modules directory '$KERNEL_MODULES_PATH' confirmed to exist by 'find'.\033[0m"
-        if [ -f "$KERNEL_IMAGE_SRC_IN_MODULES" ]; then
-            echo -e "\033[38;5;121mFound kernel image at $KERNEL_IMAGE_SRC_IN_MODULES. Copying to $BOOT_KERNEL_TARGET_PATH...\033[0m"
-            cp -v "$KERNEL_IMAGE_SRC_IN_MODULES" "$BOOT_KERNEL_TARGET_PATH"
-        else
-            echo -e "\033[38;5;210mERROR: Kernel image $KERNEL_IMAGE_SRC_IN_MODULES not found within $KERNEL_MODULES_PATH.\033[0m"
-            echo -e "\033[38;5;123mListing contents of $KERNEL_MODULES_PATH for diagnostics:\033[0m"
-            ls -Alh "$KERNEL_MODULES_PATH" || echo -e "\033[38;5;216mCould not list $KERNEL_MODULES_PATH\033[0m"
-            exit 1
-        fi
+    echo -e "\033[38;5;123mAttempting to locate kernel image at $KERNEL_IMAGE_SRC_IN_MODULES\033[0m"
+    # Directly check for the vmlinuz file in the constructed path.
+    # The directory existence check seems unreliable in this chroot environment for unknown reasons.
+    # We rely on pacman -Q having confirmed the package is installed, which should create this path.
+    if [ -f "$KERNEL_IMAGE_SRC_IN_MODULES" ]; then
+        echo -e "\033[38;5;121mFound kernel image at $KERNEL_IMAGE_SRC_IN_MODULES. Copying to $BOOT_KERNEL_TARGET_PATH...\033[0m"
+        cp -v "$KERNEL_IMAGE_SRC_IN_MODULES" "$BOOT_KERNEL_TARGET_PATH"
     else
-        echo -e "\033[38;5;210mERROR: Kernel modules directory $KERNEL_MODULES_PATH does not exist.\033[0m"
-        echo -e "\033[38;5;123mListing /usr/lib/modules/ for diagnostics:\033[0m"
+        echo -e "\033[38;5;210mERROR: Kernel image $KERNEL_IMAGE_SRC_IN_MODULES not found.\033[0m"
+        echo -e "\033[38;5;123mListing contents of expected parent directory $KERNEL_MODULES_PATH (if it exists):\033[0m"
+        ls -Alh "$KERNEL_MODULES_PATH" || echo -e "\033[38;5;216mCould not list $KERNEL_MODULES_PATH (it may not exist or ls failed).\033[0m"
+        echo -e "\033[38;5;123mListing all /usr/lib/modules/ for diagnostics:\033[0m"
         ls -Alh /usr/lib/modules/ || echo -e "\033[38;5;216mCould not list /usr/lib/modules/\033[0m"
         exit 1
     fi

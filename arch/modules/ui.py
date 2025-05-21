@@ -8,7 +8,7 @@ Handles UI elements, color definitions, and styled printing for the Arch Linux i
 import sys
 import threading
 import time
-from typing import Optional, List as TypingList # Renamed to avoid conflict with Spinner's List
+from typing import Optional, List as TypingList, Callable # Renamed to avoid conflict with Spinner's List
 
 class Colors:
     """ANSI escape codes for terminal colors."""
@@ -149,7 +149,7 @@ def prompt_yes_no(question: str, default_yes: bool = False) -> bool:
 def prompt_input(
     question: str,
     default: Optional[str] = None,
-    validator: Optional[callable[[str], bool]] = None, # type: ignore
+    validator: Optional[Callable[[str], bool]] = None, # type: ignore
     sensitive: bool = False
 ) -> str:
     """Prompts the user for input with optional default and validation."""

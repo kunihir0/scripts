@@ -11,23 +11,31 @@ import os
 import argparse
 import time
 import subprocess # For CalledProcessError
+from pathlib import Path # For sys.path modification
 from typing import List, Any, Dict
 
-# Assuming 'arch' is in PYTHONPATH or this script is run from the parent directory of 'arch'
-# For a structured project, 'arch' might be a package.
-# Use relative imports when main.py is inside the 'arch' package and run from there.
+# Adjust sys.path to allow running main.py directly from the parent directory
+# e.g., python arch/main.py from /home/coder/scripts
+# This adds /home/coder/scripts to sys.path if arch/main.py is run.
+# The __file__ variable gives the path to the current script (arch/main.py).
+# .parent gives 'arch', .parent.parent gives the directory containing 'arch'.
+_SCRIPT_DIR = Path(__file__).resolve().parent.parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
 try:
-    from .modules import config as cfg
-    from .modules import ui
-    from .modules import core
-    from .modules import disk
-    from .modules import filesystem
-    from .modules import pacstrap as strap
-    from .modules import chroot
-    from .modules import steps
+    from arch.modules import config as cfg
+    from arch.modules import ui
+    from arch.modules import core
+    from arch.modules import disk
+    from arch.modules import filesystem
+    from arch.modules import pacstrap as strap
+    from arch.modules import chroot
+    from arch.modules import steps
 except ImportError as e:
     print(f"Error: Could not import installation modules in main.py: {e}", file=sys.stderr)
-    print("Ensure the script is run from the correct directory (e.g., the parent of 'arch') or PYTHONPATH is set correctly if using absolute imports.", file=sys.stderr)
+    print(f"Current sys.path: {sys.path}", file=sys.stderr)
+    print("Ensure the script is run as 'python arch/main.py' from its parent directory, or that 'arch' package is in PYTHONPATH.", file=sys.stderr)
     sys.exit(1)
 
 def parse_arguments() -> argparse.Namespace:

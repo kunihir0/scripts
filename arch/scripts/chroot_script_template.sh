@@ -45,6 +45,8 @@ EOF_ARCH_ENTRY
 echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf\033[0m"
 
 
+sync && sleep 2 # Attempt to ensure filesystem changes are flushed and settled
+
 echo -e "\033[38;5;111mPreparing for initramfs generation with dracut...\033[0m"
 
 # Determine kernel version and paths

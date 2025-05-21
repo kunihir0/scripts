@@ -77,7 +77,9 @@ echo -e "\033[38;5;123mTarget vmlinuz in /boot: $BOOT_KERNEL_TARGET_PATH\033[0m"
 if [ ! -f "$BOOT_KERNEL_TARGET_PATH" ]; then
     echo -e "\033[38;5;228mKernel image $BOOT_KERNEL_TARGET_PATH not found directly in /boot.\033[0m"
     # Check if the source directory and file exist in /usr/lib/modules
-    if [ -d "$KERNEL_MODULES_PATH" ]; then
+    echo -e "\033[38;5;123mChecking for existence of kernel modules directory: '$KERNEL_MODULES_PATH'\033[0m"
+    if ls -d "$KERNEL_MODULES_PATH" >/dev/null 2>&1; then
+        echo -e "\033[38;5;156mKernel modules directory '$KERNEL_MODULES_PATH' confirmed to exist by ls -d.\033[0m"
         if [ -f "$KERNEL_IMAGE_SRC_IN_MODULES" ]; then
             echo -e "\033[38;5;121mFound kernel image at $KERNEL_IMAGE_SRC_IN_MODULES. Copying to $BOOT_KERNEL_TARGET_PATH...\033[0m"
             cp -v "$KERNEL_IMAGE_SRC_IN_MODULES" "$BOOT_KERNEL_TARGET_PATH"

@@ -15,18 +15,19 @@ from typing import List, Any, Dict
 
 # Assuming 'arch' is in PYTHONPATH or this script is run from the parent directory of 'arch'
 # For a structured project, 'arch' might be a package.
+# Use relative imports when main.py is inside the 'arch' package and run from there.
 try:
-    from arch.modules import config as cfg
-    from arch.modules import ui
-    from arch.modules import core
-    from arch.modules import disk
-    from arch.modules import filesystem
-    from arch.modules import pacstrap as strap
-    from arch.modules import chroot
-    from arch.modules import steps
+    from .modules import config as cfg
+    from .modules import ui
+    from .modules import core
+    from .modules import disk
+    from .modules import filesystem
+    from .modules import pacstrap as strap
+    from .modules import chroot
+    from .modules import steps
 except ImportError as e:
     print(f"Error: Could not import installation modules in main.py: {e}", file=sys.stderr)
-    print("Ensure the script is run from the correct directory or PYTHONPATH is set.", file=sys.stderr)
+    print("Ensure the script is run from the correct directory (e.g., the parent of 'arch') or PYTHONPATH is set correctly if using absolute imports.", file=sys.stderr)
     sys.exit(1)
 
 def parse_arguments() -> argparse.Namespace:

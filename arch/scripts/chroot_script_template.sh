@@ -77,19 +77,26 @@ echo -e "\033[38;5;123mTarget vmlinuz in /boot: $BOOT_KERNEL_TARGET_PATH\033[0m"
 
 # Check if the target kernel image already exists in /boot
 if [ ! -f "$BOOT_KERNEL_TARGET_PATH" ]; then
-    echo -e "\033[38;5;228mKernel image $BOOT_KERNEL_TARGET_PATH not found directly in /boot.\033[0m"
-    # Check if the source directory and file exist in /usr/lib/modules
-    echo -e "\033[38;5;123mAttempting to locate kernel image at $KERNEL_IMAGE_SRC_IN_MODULES\033[0m"
-    # Directly check for the vmlinuz file in the constructed path.
-    # The directory existence check seems unreliable in this chroot environment for unknown reasons.
-    # We rely on pacman -Q having confirmed the package is installed, which should create this path.
-    if [ -f "$KERNEL_IMAGE_SRC_IN_MODULES" ]; then
-        echo -e "\033[38;5;121mFound kernel image at $KERNEL_IMAGE_SRC_IN_MODULES. Copying to $BOOT_KERNEL_TARGET_PATH...\033[0m"
-        cp -v "$KERNEL_IMAGE_SRC_IN_MODULES" "$BOOT_KERNEL_TARGET_PATH"
+    echo -e "\033[38;5;228mKernel image $BOOT_KERNEL_TARGET_PATH not found directly in /boot. Attempting to find and copy...\033[0m"
+    
+    # Try to find the vmlinuz file using a find command, looking for the specific version and -surface suffix.
+    # This is more robust if the exact path construction has subtle issues.
+    # We search for a file named 'vmlinuz' inside a directory that matches the KERNEL_VERSION_FULL and ends with -surface.
+    # Example KERNEL_VERSION_FULL: 6.14.2.arch1-1
+    # Example actual dir: 6.14.2-arch1-1-surface (note the hyphen instead of dot sometimes)
+    # Let's try to match the pattern more generally.
+    # The KERNEL_MODULE_DIR_NAME is already "${KERNEL_VERSION_FULL}-surface"
+    
+    echo -e "\033[38;5;123mSearching for vmlinuz in /usr/lib/modules/$KERNEL_MODULE_DIR_NAME/ (looking for vmlinuz*)...\033[0m"
+    # Search for any file starting with vmlinuz within the specific kernel module directory
+    FOUND_VMLINUZ_PATH=$(find "/usr/lib/modules/${KERNEL_MODULE_DIR_NAME}/" -maxdepth 1 -type f -name "vmlinuz*" -print -quit 2>/dev/null)
+
+    if [ -n "$FOUND_VMLINUZ_PATH" ] && [ -f "$FOUND_VMLINUZ_PATH" ]; then
+        echo -e "\033[38;5;121mFound kernel image at $FOUND_VMLINUZ_PATH. Copying to $BOOT_KERNEL_TARGET_PATH...\033[0m"
+        cp -v "$FOUND_VMLINUZ_PATH" "$BOOT_KERNEL_TARGET_PATH"
     else
-        echo -e "\033[38;5;210mERROR: Kernel image $KERNEL_IMAGE_SRC_IN_MODULES not found.\033[0m"
-        echo -e "\033[38;5;123mListing contents of expected parent directory $KERNEL_MODULES_PATH (if it exists):\033[0m"
-        ls -Alh "$KERNEL_MODULES_PATH" || echo -e "\033[38;5;216mCould not list $KERNEL_MODULES_PATH (it may not exist or ls failed).\033[0m"
+        echo -e "\033[38;5;210mERROR: Kernel vmlinuz file not found using find in expected module locations.\033[0m"
+        echo -e "\033[38;5;123mTried searching in paths like /usr/lib/modules/$KERNEL_MODULE_DIR_NAME/vmlinuz\033[0m"
         echo -e "\033[38;5;123mListing all /usr/lib/modules/ for diagnostics:\033[0m"
         ls -Alh /usr/lib/modules/ || echo -e "\033[38;5;216mCould not list /usr/lib/modules/\033[0m"
         exit 1

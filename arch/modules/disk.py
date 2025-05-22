@@ -7,6 +7,7 @@ partitioning, formatting, LVM, and Btrfs subvolume creation.
 """
 
 import sys
+import os # <--- ADDED IMPORT
 import time
 from pathlib import Path
 from typing import Dict, Any, List as TypingList, Callable, Tuple, Union, Optional
@@ -121,12 +122,17 @@ def check_and_free_device(device_path_str: str) -> None:
     # Order matters for unmounting: deepest first
     explicit_unmount_targets: TypingList[Path] = [
         mnt_base / "boot/efi", mnt_base / "boot",
-        mnt_base / "home", mnt_base / "var", mnt_base / ".snapshots", # BTRFS subvolumes
-        mnt_base # Root mount
+        mnt_base / "home", mnt_base / "var", # Standard dirs
+        # Add .snapshots or other custom mount points if they were part of the old setup
+        # For now, assuming these are the main ones that might be on /mnt
     ]
+    # If BTRFS was previously used, .snapshots might exist as a mount point
+    # This logic is now simplified as we target ext4, but old mounts might persist.
+    if (mnt_base / ".snapshots").exists(): # Check if it was a dir/mount
+        explicit_unmount_targets.insert(2, mnt_base / ".snapshots")
+
 
     for target_path in explicit_unmount_targets:
-        # Check if mounted using findmnt (destructive=False as it's read-only)
         findmnt_check: Optional[subprocess.CompletedProcess] = core.run_command(
             ["findmnt", "-n", "-r", "-o", "TARGET", "--target", str(target_path)],
             capture_output=True, destructive=False, show_spinner=False, check=False
@@ -134,24 +140,44 @@ def check_and_free_device(device_path_str: str) -> None:
         if findmnt_check and findmnt_check.returncode == 0 and str(target_path) in findmnt_check.stdout.strip():
             ui.print_color(f"Attempting to unmount {target_path} (lazy)...", ui.Colors.BLUE)
             core.run_command(
-                ["umount", "-fl", str(target_path)], # -f force, -l lazy
+                ["umount", "-fl", str(target_path)],
                 check=False, destructive=True, show_spinner=False, retry_count=3, retry_delay=1.5
             )
+    
+    # Specifically try to swapoff the configured LVM swap volume if it exists and is active
+    target_vg_name: Optional[str] = user_config.get('lvm_vg_name')
+    lv_swap_name: Optional[str] = user_config.get('lvm_lv_swap_name')
+    swap_size_gb_str = str(user_config.get('swap_size_gb', "0"))
+    swap_configured: bool = False
+    try:
+        if float(swap_size_gb_str) > 0:
+            swap_configured = True
+    except ValueError:
+        pass
 
-    # Deactivate swap on the target device
-    swapon_proc: Optional[subprocess.CompletedProcess] = core.run_command(
-        ["swapon", "--show=NAME,TYPE"], # Get NAME and TYPE
-        capture_output=True, destructive=False, show_spinner=False, check=False
-    )
-    if swapon_proc and swapon_proc.stdout:
-        for line in swapon_proc.stdout.strip().split('\n')[1:]: # Skip header
-            parts: TypingList[str] = line.split()
-            if parts and Path(parts[0]).resolve().is_relative_to(device_path.resolve()):
-                ui.print_color(f"Deactivating swap on {parts[0]}...", ui.Colors.BLUE)
-                core.run_command(["swapoff", parts[0]], check=False, destructive=True)
+    if target_vg_name and lv_swap_name and swap_configured:
+        # Try both common paths for the LV swap device
+        swap_lv_paths_to_try: TypingList[str] = [
+            f"/dev/{target_vg_name}/{lv_swap_name}",
+            f"/dev/mapper/{target_vg_name}-{lv_swap_name}"
+        ]
+        swaps_output_proc = core.run_command(["cat", "/proc/swaps"], capture_output=True, destructive=False, show_spinner=False, check=False)
+        active_swaps_content = swaps_output_proc.stdout if swaps_output_proc and swaps_output_proc.stdout else ""
+
+        for swap_lv_path in swap_lv_paths_to_try:
+            if Path(swap_lv_path).exists(): # Check if the device node exists
+                 # Check if this path (or its real path) is in /proc/swaps
+                try:
+                    real_swap_lv_path = os.path.realpath(swap_lv_path)
+                    if real_swap_lv_path in active_swaps_content or swap_lv_path in active_swaps_content:
+                        ui.print_color(f"Attempting to deactivate swap on {swap_lv_path}...", ui.Colors.BLUE)
+                        core.run_command(["swapoff", swap_lv_path], check=False, destructive=True)
+                        break # Found and attempted swapoff
+                except FileNotFoundError: # os.path.realpath can fail if symlink is broken
+                    pass
+
 
     # Deactivate LVM on the target device
-    target_vg_name: Optional[str] = user_config.get('lvm_vg_name')
     sfx_func: Callable[[int], str] = get_partition_suffix_func(str(user_config.get('target_drive', '')))
     # Assuming LVM is on the second partition by convention in this script
     lvm_partition_device_str: str = f"{user_config.get('target_drive', '')}{sfx_func(2)}"

@@ -28,33 +28,40 @@ echo -e "\033[38;5;111mConfiguring systemd-boot (loader.conf configured pre-chro
 bootctl --path=/boot/efi install # Installs systemd-boot to EFI partition
 
 # Get ROOT PARTITION UUID for bootloader entry
+# ROOT_PART_UUID is still useful for fstab, but not for root= kernel parameter anymore.
+# We will use /dev/mapper/VG-LV path for root=
 ROOT_PART_UUID=$(findmnt -n -o UUID -T /)
 if [ -z "$ROOT_PART_UUID" ]; then
-    echo -e "\033[38;5;210mERROR: Could not determine ROOT_PART_UUID for bootloader entry.\033[0m"
-    exit 1
+    echo -e "\033[38;5;228mWarning: Could not determine ROOT_PART_UUID (used for fstab verification). This might not be critical if fstab uses other means or is correct.\033[0m"
+    # Do not exit, as root= will use device path.
 fi
-echo -e "\033[38;5;123mDetermined ROOT_PART_UUID: $ROOT_PART_UUID\033[0m"
+if [ -n "$ROOT_PART_UUID" ]; then # Only print if found
+    echo -e "\033[38;5;123mDetermined ROOT_PART_UUID (for fstab context): $ROOT_PART_UUID\033[0m"
+fi
+
+# Construct the root device path
+ROOT_DEVICE_PATH="/dev/mapper/__SETUP_LVM_VG_NAME__-__SETUP_LVM_LV_ROOT_NAME__"
+echo -e "\033[38;5;123mUsing ROOT_DEVICE_PATH for kernel: $ROOT_DEVICE_PATH\033[0m"
 
 cat << EOF_ARCH_ENTRY > /boot/efi/loader/entries/arch-surface.conf
 title   Arch Linux (Surface - GNOME)
 linux   /vmlinuz-linux-surface
 initrd  /intel-ucode.img
 initrd  /initramfs-linux-surface.img
-options root=UUID=$ROOT_PART_UUID rootfstype=ext4 rd.lvm.vg=__SETUP_LVM_VG_NAME__ rd.lvm.lv=__SETUP_LVM_VG_NAME__/__SETUP_LVM_LV_ROOT_NAME__ rw mitigations=off loglevel=7 rd.break=pre-mount
+options root=$ROOT_DEVICE_PATH rootfstype=ext4 rd.lvm.vg=__SETUP_LVM_VG_NAME__ rd.lvm.lv=__SETUP_LVM_VG_NAME__/__SETUP_LVM_LV_ROOT_NAME__ rw mitigations=off loglevel=7 rd.break=pre-mount
 EOF_ARCH_ENTRY
-echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (ext4 root, rootfstype, verbose boot, LVM options, rd.break=pre-mount for debugging)\033[0m"
+echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (root=$ROOT_DEVICE_PATH, rootfstype, verbose boot, LVM options, rd.break=pre-mount for debugging)\033[0m"
 
-# Verify the ROOT_PART_UUID in the .conf file matches the one determined dynamically
+# Verification of root= parameter in the .conf file
 CONF_FILE_PATH="/boot/efi/loader/entries/arch-surface.conf"
 if [ -f "$CONF_FILE_PATH" ]; then
-    EXTRACTED_CONF_ROOT_UUID=$(grep -oP 'root=UUID=\K[^ ]+' "$CONF_FILE_PATH")
-    if [ "$ROOT_PART_UUID" = "$EXTRACTED_CONF_ROOT_UUID" ]; then
-        echo -e "\033[38;5;156mVerification PASSED: ROOT_PART_UUID ($ROOT_PART_UUID) matches root=UUID in $CONF_FILE_PATH.\033[0m"
+    # Extract the full root= part
+    EXTRACTED_CONF_ROOT_PARAM=$(grep -oP 'root=[^ ]+' "$CONF_FILE_PATH" | head -n 1)
+    EXPECTED_ROOT_PARAM="root=$ROOT_DEVICE_PATH"
+    if [ "$EXPECTED_ROOT_PARAM" = "$EXTRACTED_CONF_ROOT_PARAM" ]; then
+        echo -e "\033[38;5;156mVerification PASSED: '$EXPECTED_ROOT_PARAM' matches in $CONF_FILE_PATH.\033[0m"
     else
-        echo -e "\033[38;5;210mCRITICAL VERIFICATION FAILED: ROOT_PART_UUID ($ROOT_PART_UUID) does NOT match root=UUID ($EXTRACTED_CONF_ROOT_UUID) in $CONF_FILE_PATH.\033[0m"
-        # Consider exiting here if this is critical, or let it proceed for further debugging by user.
-        # For now, let's print a strong warning.
-        # exit 1
+        echo -e "\033[38;5;210mCRITICAL VERIFICATION FAILED: Expected '$EXPECTED_ROOT_PARAM' but found '$EXTRACTED_CONF_ROOT_PARAM' in $CONF_FILE_PATH.\033[0m"
     fi
 else
     echo -e "\033[38;5;210mERROR: Bootloader entry file $CONF_FILE_PATH not found for verification.\033[0m"

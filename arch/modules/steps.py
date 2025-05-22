@@ -358,9 +358,10 @@ def final_system_integrity_checks(no_verify_arg: bool) -> bool:
                 break
         
         if options_line:
-            # Check root=UUID
-            expected_root_uuid_param = f"root=UUID={root_uuid_from_lsblk}" if root_uuid_from_lsblk else "MISSING_ROOT_UUID_PARAM"
-            if not core.verify_step(expected_root_uuid_param in options_line, f"Bootloader 'options' line contains '{expected_root_uuid_param}'", critical=True): all_ok = False
+            # Check root=/dev/mapper/VG-LV
+            expected_root_dev_path = f"/dev/mapper/{user_config['lvm_vg_name']}-{user_config['lvm_lv_root_name']}"
+            expected_root_path_param = f"root={expected_root_dev_path}"
+            if not core.verify_step(expected_root_path_param in options_line, f"Bootloader 'options' line contains '{expected_root_path_param}'", critical=True): all_ok = False
             
             # Check rootfstype if ext4
             if root_fs_type_config == "ext4":

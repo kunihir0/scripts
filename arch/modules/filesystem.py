@@ -6,6 +6,7 @@ Handles filesystem mounting, fstab generation, and verification for the Arch Lin
 """
 
 import sys
+import os # <--- ADDED IMPORT
 from pathlib import Path
 from typing import Dict, Any, List as TypingList, Optional, Callable
 import subprocess # For subprocess.CompletedProcess type hint
@@ -242,14 +243,51 @@ def verify_mounts(no_verify_arg: bool) -> None:
         pass
 
     if swap_size_gb > 0:
-        lv_swap_path_str: str = f"/dev/mapper/{user_config['lvm_vg_name']}-{user_config['lvm_lv_swap_name']}"
-        # destructive=False as swapon is read-only here
-        swap_check_proc: Optional[subprocess.CompletedProcess] = core.run_command(
-            ["swapon", "--show=NAME"],
-            capture_output=True, destructive=False, show_spinner=False, check=False
-        )
-        swap_active: bool = bool(swap_check_proc and swap_check_proc.returncode == 0 and swap_check_proc.stdout and lv_swap_path_str in swap_check_proc.stdout)
-        if not core.verify_step(swap_active, f"Swap on {lv_swap_path_str} is active", critical=True): all_ok = False
+        # Construct both potential paths for the swap LV
+        # Path via /dev/vg_name/lv_name
+        lv_swap_dev_vg_path_str: str = f"/dev/{user_config['lvm_vg_name']}/{user_config['lvm_lv_swap_name']}"
+        # Path via /dev/mapper/vg_name-lv_name
+        lv_swap_dev_mapper_path_str: str = f"/dev/mapper/{user_config['lvm_vg_name']}-{user_config['lvm_lv_swap_name']}"
+        
+        swap_active: bool = False
+        active_swap_device_found: str = "None"
+
+        if cfg.get_dry_run_mode():
+            swap_active = True # Assume active in dry run
+            active_swap_device_found = lv_swap_dev_mapper_path_str # Placeholder for message
+        else:
+            try:
+                with open("/proc/swaps", "r", encoding="utf-8") as f_swaps:
+                    lines = f_swaps.readlines()
+                if len(lines) > 1: # Header + data lines
+                    for line in lines[1:]:
+                        parts = line.split()
+                        if parts:
+                            swap_device_from_proc = parts[0]
+                            # Resolve symlinks for comparison
+                            try:
+                                real_proc_swap_dev = os.path.realpath(swap_device_from_proc)
+                                real_expected_swap_dev_vg = os.path.realpath(lv_swap_dev_vg_path_str)
+                                real_expected_swap_dev_mapper = os.path.realpath(lv_swap_dev_mapper_path_str)
+
+                                if real_proc_swap_dev == real_expected_swap_dev_vg or \
+                                   real_proc_swap_dev == real_expected_swap_dev_mapper:
+                                    swap_active = True
+                                    active_swap_device_found = swap_device_from_proc # The one found in /proc/swaps
+                                    break
+                            except FileNotFoundError:
+                                # This can happen if a device listed in /proc/swaps is no longer valid
+                                # or if our expected LVM paths don't exist (which would be an earlier issue)
+                                continue
+            except FileNotFoundError:
+                ui.print_color("Could not read /proc/swaps to verify swap status.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+            except Exception as e:
+                ui.print_color(f"Error checking /proc/swaps: {e}", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+
+        # The message should reflect the path we expect to be user-recognizable
+        verification_message = f"Swap on LVM LV '{user_config['lvm_lv_swap_name']}' (found as {active_swap_device_found}) is active"
+        if not core.verify_step(swap_active, verification_message, critical=True):
+            all_ok = False
 
     if all_ok:
         ui.print_color("Mount verification successful.", ui.Colors.GREEN, prefix=ui.SUCCESS_SYMBOL)

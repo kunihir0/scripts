@@ -9,7 +9,7 @@ These functions often orchestrate calls to more specialized modules.
 import sys
 import subprocess # For CalledProcessError
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional, Callable # Added List, Optional, Callable
 
 # Attempt to import from sibling modules
 try:
@@ -218,3 +218,136 @@ def final_cleanup_and_reboot_instructions() -> None:
         ui.print_color("Remember to remove the installation media.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
     else:
         ui.print_color("Dry run complete. No changes were made to your system.", ui.Colors.MINT)
+
+def final_system_integrity_checks(no_verify_arg: bool) -> bool:
+    """
+    Performs final integrity checks on fstab, bootloader config, and device UUIDs/FSTYPEs.
+    This is run after all installation steps, just before cleanup.
+    Returns True if all checks pass, False otherwise.
+    """
+    if no_verify_arg:
+        ui.print_step_info("Skipping final system integrity checks as per --no-verify.")
+        sys.stdout.write("\n"); return True
+
+    ui.print_section_header("Final System Integrity Checks")
+    all_ok: bool = True
+    user_config: Dict[str, Any] = cfg.get_all_user_config()
+    mnt_base: Path = Path("/mnt")
+
+    # --- 1. Verify /mnt/etc/fstab entries ---
+    ui.print_step_info("Verifying /mnt/etc/fstab content...")
+    fstab_path: Path = mnt_base / "etc/fstab"
+    root_fs_type_config: str = str(user_config.get("root_filesystem_type", "ext4"))
+    
+    expected_fstab_entries: List[Dict[str, Optional[str]]] = []
+    
+    # Root entry
+    root_lv_device_path_for_lsblk: str = f"/dev/mapper/{user_config['lvm_vg_name']}-{user_config['lvm_lv_root_name']}"
+    root_uuid_from_lsblk: Optional[str] = core.get_uuid_from_lsblk(root_lv_device_path_for_lsblk)
+    if root_uuid_from_lsblk:
+        expected_fstab_entries.append({
+            "device_uuid": root_uuid_from_lsblk,
+            "mount_point": "/",
+            "fstype": root_fs_type_config,
+            "options_substring": str(user_config.get(f"{root_fs_type_config}_mount_options", "defaults")).split(',')[0] # Check first option
+        })
+    else:
+        ui.print_color(f"Could not get UUID for root LV {root_lv_device_path_for_lsblk} for fstab check.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
+        all_ok = False
+
+    # EFI entry
+    # Use the public function from disk module
+    partition_suffix_generator: Callable[[int], str] = disk.get_partition_suffix_func(str(user_config['target_drive']))
+    sfx: str = partition_suffix_generator(1)
+    efi_device_path_for_lsblk: str = f"{user_config['target_drive']}{sfx}"
+    efi_uuid_from_lsblk: Optional[str] = core.get_uuid_from_lsblk(efi_device_path_for_lsblk)
+    if efi_uuid_from_lsblk:
+        expected_fstab_entries.append({
+            "device_uuid": efi_uuid_from_lsblk,
+            "mount_point": "/boot/efi",
+            "fstype": "vfat",
+            "options_substring": "defaults" # Typical for EFI
+        })
+    else:
+        ui.print_color(f"Could not get UUID for EFI partition {efi_device_path_for_lsblk} for fstab check.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
+        all_ok = False
+        
+    # Swap entry (if configured)
+    swap_size_gb: float = 0.0
+    try: swap_size_gb = float(str(user_config.get('swap_size_gb', "0")))
+    except ValueError: pass
+    if swap_size_gb > 0:
+        swap_lv_device_path_for_lsblk: str = f"/dev/mapper/{user_config['lvm_vg_name']}-{user_config['lvm_lv_swap_name']}"
+        swap_uuid_from_lsblk: Optional[str] = core.get_uuid_from_lsblk(swap_lv_device_path_for_lsblk)
+        if swap_uuid_from_lsblk:
+            expected_fstab_entries.append({
+                "device_uuid": swap_uuid_from_lsblk,
+                "mount_point": "none", # For swap
+                "fstype": "swap",
+                "options_substring": "sw" # Typical for swap
+            })
+        else:
+            ui.print_color(f"Could not get UUID for swap LV {swap_lv_device_path_for_lsblk} for fstab check.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
+            all_ok = False # Swap is configured but UUID not found
+
+    if not cfg.get_dry_run_mode() and fstab_path.exists():
+        fstab_content: str = fstab_path.read_text()
+        for entry in expected_fstab_entries:
+            if not entry["device_uuid"]: continue # Skip if UUID couldn't be determined
+
+            found_entry_line: bool = False
+            for line in fstab_content.splitlines():
+                line = line.strip()
+                if line.startswith("#") or not line: continue
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == f"UUID={entry['device_uuid']}" and \
+                   parts[1] == entry["mount_point"] and parts[2] == entry["fstype"] and \
+                   (entry["options_substring"] is None or str(entry["options_substring"]) in parts[3]):
+                    found_entry_line = True
+                    break
+            if not core.verify_step(found_entry_line, f"fstab entry for {entry['mount_point']} (UUID={entry['device_uuid'][:8]}...) with type {entry['fstype']} and options containing '{entry['options_substring']}'", critical=True):
+                all_ok = False
+    elif not cfg.get_dry_run_mode():
+        ui.print_color(f"{fstab_path} not found for verification.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
+        all_ok = False
+    
+    # --- 2. Verify systemd-boot kernel parameters ---
+    ui.print_step_info("Verifying systemd-boot kernel parameters...")
+    boot_entry_path: Path = mnt_base / "boot/efi/loader/entries/arch-surface.conf"
+    if not cfg.get_dry_run_mode() and boot_entry_path.exists():
+        entry_content: str = boot_entry_path.read_text()
+        options_line: Optional[str] = None
+        for line in entry_content.splitlines():
+            if line.strip().startswith("options"):
+                options_line = line.strip()
+                break
+        
+        if options_line:
+            # Check root=UUID
+            expected_root_uuid_param = f"root=UUID={root_uuid_from_lsblk}" if root_uuid_from_lsblk else "MISSING_ROOT_UUID_PARAM"
+            if not core.verify_step(expected_root_uuid_param in options_line, f"Bootloader 'options' line contains '{expected_root_uuid_param}'", critical=True): all_ok = False
+            
+            # Check rootfstype if ext4
+            if root_fs_type_config == "ext4":
+                if not core.verify_step("rootfstype=ext4" in options_line, "Bootloader 'options' line contains 'rootfstype=ext4'", critical=True): all_ok = False
+            
+            # Check LVM params
+            expected_lvm_vg_param = f"rd.lvm.vg={user_config['lvm_vg_name']}"
+            expected_lvm_lv_param = f"rd.lvm.lv={user_config['lvm_vg_name']}/{user_config['lvm_lv_root_name']}"
+            if not core.verify_step(expected_lvm_vg_param in options_line, f"Bootloader 'options' line contains '{expected_lvm_vg_param}'", critical=True): all_ok = False
+            if not core.verify_step(expected_lvm_lv_param in options_line, f"Bootloader 'options' line contains '{expected_lvm_lv_param}'", critical=True): all_ok = False
+
+        else:
+            ui.print_color(f"Could not find 'options' line in {boot_entry_path}", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
+            all_ok = False
+    elif not cfg.get_dry_run_mode():
+        ui.print_color(f"{boot_entry_path} not found for verification.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
+        all_ok = False
+
+    if all_ok:
+        ui.print_color("Final system integrity checks PASSED.", ui.Colors.GREEN, prefix=ui.SUCCESS_SYMBOL)
+    else:
+        ui.print_color("One or more final system integrity checks FAILED.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
+    
+    sys.stdout.write("\n")
+    return all_ok

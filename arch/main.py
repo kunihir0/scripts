@@ -145,6 +145,20 @@ def main_orchestrator() -> int:
             chroot.chroot_configure_system()
             chroot.verify_chroot_configs(args.no_verify)
         
+        # Perform final integrity checks before cleanup
+        # This is a new step to verify fstab, bootloader args against actual disk states
+        # It should run after chroot_configure and its verification, but before the final cleanup message.
+        # We don't assign it a formal step in INSTALL_STEPS, it's part of the end-of-process checks.
+        if not cfg.get_dry_run_mode(): # Only run these checks if not in dry run, as they rely on actual system state
+            if not steps.final_system_integrity_checks(args.no_verify):
+                # The function itself handles prompting the user if they want to continue on critical failure.
+                # If it returns False and user chose to abort, sys.exit would have been called.
+                # If user chose to continue, we can just note it here or proceed.
+                ui.print_color("Proceeding after final integrity check failures as per user confirmation or non-critical issues.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+        else:
+            ui.print_color("[DRY RUN] Skipping final system integrity checks.", ui.Colors.PEACH)
+
+
         # Cleanup is the final step in the INSTALL_STEPS list
         if cfg.get_current_step() <= cfg.INSTALL_STEPS.index("cleanup"):
              steps.final_cleanup_and_reboot_instructions()

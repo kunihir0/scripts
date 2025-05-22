@@ -28,9 +28,9 @@ except ImportError:
         sys.exit(1)
 
 
-def _get_partition_suffix_func(drive_path_str: str) -> Callable[[int], str]:
+def get_partition_suffix_func(drive_path_str: str) -> Callable[[int], str]:
     """
-    Returns a function that generates the correct partition suffix (e.g., 'p1' or '1')
+    Public: Returns a function that generates the correct partition suffix (e.g., 'p1' or '1')
     based on the drive name (nvme/loop vs. sdX/hdX).
     """
     normalized_drive = drive_path_str.lower()
@@ -152,7 +152,7 @@ def check_and_free_device(device_path_str: str) -> None:
 
     # Deactivate LVM on the target device
     target_vg_name: Optional[str] = user_config.get('lvm_vg_name')
-    sfx_func: Callable[[int], str] = _get_partition_suffix_func(str(user_config.get('target_drive', '')))
+    sfx_func: Callable[[int], str] = get_partition_suffix_func(str(user_config.get('target_drive', '')))
     # Assuming LVM is on the second partition by convention in this script
     lvm_partition_device_str: str = f"{user_config.get('target_drive', '')}{sfx_func(2)}"
 
@@ -212,7 +212,7 @@ def partition_and_format() -> None:
 
     check_and_free_device(drive) # Ensure device is free before partitioning
 
-    sfx: Callable[[int], str] = _get_partition_suffix_func(drive)
+    sfx: Callable[[int], str] = get_partition_suffix_func(drive)
     efi_part_dev_str: str = f"{drive}{sfx(1)}"
     lvm_part_dev_str: str = f"{drive}{sfx(2)}"
 
@@ -312,7 +312,7 @@ def verify_partitions_lvm(no_verify_arg: bool) -> None:
 
     user_config: Dict[str, Any] = cfg.get_all_user_config()
     drive: str = str(user_config['target_drive'])
-    sfx: Callable[[int], str] = _get_partition_suffix_func(drive)
+    sfx: Callable[[int], str] = get_partition_suffix_func(drive)
     
     efi_part_dev_str: str = f"{drive}{sfx(1)}"
     lvm_part_dev_str: str = f"{drive}{sfx(2)}"

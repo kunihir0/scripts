@@ -253,3 +253,41 @@ def verify_step(
     elif cfg.get_dry_run_mode() and critical:
         ui.print_color("Verification failed (critical), this might be expected if preceding destructive steps were skipped in dry run.", ui.Colors.PEACH, prefix=f"{ui.Colors.YELLOW}[DRY RUN]{ui.Colors.RESET}")
     return False
+
+def get_uuid_from_lsblk(device_path_str: str) -> Optional[str]:
+    """
+    Gets the UUID of a given device using lsblk -fno UUID.
+    Returns the UUID string or None if not found or error.
+    """
+    if cfg.get_dry_run_mode():
+        # In dry run, we can't actually get a UUID, so return a placeholder or None
+        # For verification purposes, a placeholder might be better if the calling code expects a string.
+        # However, for actual logic, None is safer. Let's return a mock UUID for now.
+        # This part might need adjustment based on how verify_step handles None vs mock data.
+        mock_uuid_map: Dict[str, str] = {
+            f"/dev/mapper/{cfg.get_user_config_value('lvm_vg_name')}-{cfg.get_user_config_value('lvm_lv_root_name')}": "DRYRUN-ROOT-UUID-XXXX",
+            f"/dev/mapper/{cfg.get_user_config_value('lvm_vg_name')}-{cfg.get_user_config_value('lvm_lv_swap_name')}": "DRYRUN-SWAP-UUID-YYYY",
+            # Add more mocks if needed, e.g., for EFI based on target_drive + suffix
+        }
+        # Construct EFI mock based on target_drive
+        target_drive = cfg.get_user_config_value('target_drive')
+        if target_drive:
+            sfx_func = getattr(sys.modules.get('arch.modules.disk'), '_get_partition_suffix_func', lambda d: lambda n: str(n))
+            efi_sfx = sfx_func(str(target_drive))(1)
+            mock_uuid_map[f"{target_drive}{efi_sfx}"] = "DRYRUN-EFI-UUID-ZZZZ"
+
+        # ui.print_color(f"[DRY RUN] Mocking UUID for {device_path_str}. Returning placeholder.", ui.Colors.PEACH)
+        return mock_uuid_map.get(device_path_str, "DRYRUN-UNKNOWN-UUID")
+
+
+    proc: Optional[subprocess.CompletedProcess] = run_command(
+        ["lsblk", "-fno", "UUID", device_path_str],
+        capture_output=True, destructive=False, show_spinner=False, check=False
+    )
+    if proc and proc.returncode == 0 and proc.stdout and proc.stdout.strip():
+        return proc.stdout.strip()
+    else:
+        ui.print_color(f"Warning: Could not get UUID for {device_path_str} using lsblk.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+        if proc and proc.stderr:
+            ui.print_color(f"lsblk stderr: {proc.stderr.strip()}", ui.Colors.ORANGE)
+        return None

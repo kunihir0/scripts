@@ -40,9 +40,9 @@ title   Arch Linux (Surface - GNOME)
 linux   /vmlinuz-linux-surface
 initrd  /intel-ucode.img
 initrd  /initramfs-linux-surface.img
-options root=UUID=$ROOT_PART_UUID rd.lvm.vg=__SETUP_LVM_VG_NAME__ rd.lvm.lv=__SETUP_LVM_VG_NAME__/__SETUP_LVM_LV_ROOT_NAME__ rw mitigations=off loglevel=7
+options root=UUID=$ROOT_PART_UUID rootfstype=ext4 rd.lvm.vg=__SETUP_LVM_VG_NAME__ rd.lvm.lv=__SETUP_LVM_VG_NAME__/__SETUP_LVM_LV_ROOT_NAME__ rw mitigations=off loglevel=7
 EOF_ARCH_ENTRY
-echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (ext4 root, verbose boot & LVM options for debugging)\033[0m"
+echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (ext4 root, rootfstype, verbose boot & LVM options for debugging)\033[0m"
 
 # Verify the ROOT_PART_UUID in the .conf file matches the one determined dynamically
 CONF_FILE_PATH="/boot/efi/loader/entries/arch-surface.conf"

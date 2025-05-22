@@ -124,21 +124,38 @@ def pre_chroot_file_configurations() -> None:
     core.write_file_dry_run(dconf_profile_dir / "user", "user-db:user\nsystem-db:local\n")
     core.write_file_dry_run(dconf_db_locald_dir / "00-hidpi-fractional-scaling", "[org/gnome/mutter]\nexperimental-features=['scale-monitor-framebuffer']\n")
 
-    # Sudoers (enable wheel group)
-    sudoers_path: Path = mnt_base / "etc/sudoers"
-    if not cfg.get_dry_run_mode() and sudoers_path.exists():
+    # Sudoers (enable wheel group with NOPASSWD for pacman)
+    sudoers_d_dir: Path = mnt_base / "etc/sudoers.d"
+    core.make_dir_dry_run(sudoers_d_dir, parents=True, exist_ok=True)
+    sudoers_file_content: str = "%wheel ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman\n"
+    sudoers_file_path: Path = sudoers_d_dir / "10-installer-wheel-nopasswd-pacman"
+    
+    # Also ensure the main sudoers file has the wheel group line uncommented for general sudo access (with password)
+    # This is important if the user wants to sudo for commands other than pacman later.
+    main_sudoers_path: Path = mnt_base / "etc/sudoers"
+    if not cfg.get_dry_run_mode() and main_sudoers_path.exists():
         try:
-            content: str = sudoers_path.read_text()
-            # Ensure to uncomment the correct line, be careful with sudoers
+            content: str = main_sudoers_path.read_text()
             target_line_commented: str = "# %wheel ALL=(ALL:ALL) ALL"
             target_line_uncommented: str = "%wheel ALL=(ALL:ALL) ALL"
             if target_line_commented in content:
-                sudoers_path.write_text(content.replace(target_line_commented, target_line_uncommented))
-                ui.print_color(f"Enabled wheel group in {sudoers_path}", ui.Colors.MINT)
+                main_sudoers_path.write_text(content.replace(target_line_commented, target_line_uncommented))
+                ui.print_color(f"Ensured wheel group is enabled in {main_sudoers_path}", ui.Colors.MINT)
+            elif target_line_uncommented not in content:
+                 ui.print_color(f"Warning: Could not find '{target_line_commented}' or '{target_line_uncommented}' in {main_sudoers_path}. Manual check advised.", ui.Colors.ORANGE)
+
         except Exception as e:
-            ui.print_color(f"Error modifying {sudoers_path}: {e}", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+            ui.print_color(f"Error modifying {main_sudoers_path}: {e}", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
 
-
+    core.write_file_dry_run(sudoers_file_path, sudoers_file_content)
+    if not cfg.get_dry_run_mode():
+        try:
+            # sudoers.d files should have specific permissions
+            os.chmod(sudoers_file_path, 0o440)
+            ui.print_color(f"Configured NOPASSWD for pacman for wheel group via {sudoers_file_path.relative_to(mnt_base)}", ui.Colors.MINT)
+        except Exception as e:
+            ui.print_color(f"Error setting permissions for {sudoers_file_path}: {e}", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+            
     ui.print_color("Pre-chroot file configurations complete.", ui.Colors.GREEN, prefix=ui.SUCCESS_SYMBOL)
     cfg.set_current_step(cfg.INSTALL_STEPS.index("chroot_configure"))
     cfg.save_progress()

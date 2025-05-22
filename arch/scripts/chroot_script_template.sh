@@ -129,9 +129,9 @@ echo -e "\033[38;5;156mKernel image $BOOT_KERNEL_TARGET_PATH is ready in system 
 
 # Use the ACTUAL_KERNEL_MODULE_DIR_NAME for dracut's --kver argument
 DRACUT_KVER="$ACTUAL_KERNEL_MODULE_DIR_NAME"
-echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $DRACUT_KVER, explicitly adding lvm and ext4 modules...\033[0m"
-# Add lvm and ext4 modules explicitly to ensure they are included for LVM on ext4 setup.
-dracut --force --hostonly --no-hostonly-cmdline --add "lvm ext4" --kver "$DRACUT_KVER" "$INITRAMFS_TARGET_PATH"
+echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $DRACUT_KVER, explicitly adding lvm module...\033[0m"
+# Add lvm module explicitly. ext4 support should be included by --hostonly as it's the root fs.
+dracut --force --hostonly --no-hostonly-cmdline --add "lvm" --kver "$DRACUT_KVER" "$INITRAMFS_TARGET_PATH"
 echo -e "\033[38;5;121mInitramfs generation attempted at $INITRAMFS_TARGET_PATH (system /boot).\033[0m"
 
 echo -e "\033[38;5;111mCopying kernel, initramfs, and microcode to ESP (/boot/efi/ for systemd-boot)...\033[0m"

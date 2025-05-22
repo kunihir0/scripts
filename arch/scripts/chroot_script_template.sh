@@ -218,6 +218,7 @@ USER_SCRIPT_PATH="/tmp/user_setup_script.sh"
 cat << 'EOF_USER_SCRIPT' > "$USER_SCRIPT_PATH"
 #!/bin/bash
 set -e
+set -x # Enable command tracing for debugging this user script
 echo -e "\033[38;5;123m--- Running as user __SETUP_USERNAME__ for AUR and Keys (from $0) ---\033[0m"
 # Set a comprehensive PATH to ensure system binaries are found
 export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

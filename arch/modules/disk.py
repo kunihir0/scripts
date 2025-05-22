@@ -215,9 +215,68 @@ def check_and_free_device(device_path_str: str) -> None:
         elif Path(lvm_partition_device_str).exists():
             ui.print_color(f"VG {target_vg_name} not found. Checking for PV signatures on {lvm_partition_device_str}...", ui.Colors.CYAN)
             core.run_command(["pvremove", "--force", "--force", "-y", lvm_partition_device_str], check=False, destructive=True, show_spinner=False)
+        
+        # Attempt to remove device mapper entries for all LVs in the target VG.
+        # This is an extra step to ensure devices are freed.
+        # Do this after vgchange/vgremove attempts.
+        if vgdisplay_proc and vgdisplay_proc.returncode == 0 and target_vg_name: # If VG existed
+            ui.print_step_info(f"Attempting to remove device mapper entries for LVs in VG '{target_vg_name}'...")
+            lvs_proc: Optional[subprocess.CompletedProcess] = core.run_command(
+                ["lvs", "--noheadings", "-o", "lv_name", target_vg_name],
+                capture_output=True, destructive=False, show_spinner=False, check=False
+            )
+            if lvs_proc and lvs_proc.returncode == 0 and lvs_proc.stdout:
+                lv_names_in_vg: TypingList[str] = [name.strip() for name in lvs_proc.stdout.splitlines() if name.strip()]
+                if lv_names_in_vg:
+                    ui.print_color(f"Found LVs in '{target_vg_name}': {', '.join(lv_names_in_vg)}. Attempting dmsetup remove for each.", ui.Colors.BLUE)
+                    for lv_name_from_lvs in lv_names_in_vg:
+                        # Construct potential mapper names
+                        # Standard: vg_name-lv_name
+                        # systemd style: vg_name--lv_name (hyphens in names get doubled)
+                        # We need to be careful here. The actual mapper name is vg_name-lv_name,
+                        # where vg_name and lv_name can themselves contain hyphens.
+                        # systemd's escaping rule is complex.
+                        # A common pattern is simply replacing internal hyphens with '--' IF the whole thing is then used by systemd.
+                        # For dmsetup, the name is usually vg_name-lv_name.
+                        
+                        # Let's try the most common mapper name format first.
+                        # The LVM tools (lvchange, etc.) use /dev/vg/lv or /dev/mapper/vg-lv.
+                        # dmsetup uses the name part of /dev/mapper/name.
+                        
+                        mapper_device_name_style1: str = f"{target_vg_name}-{lv_name_from_lvs}"
+                        # systemd might escape hyphens within vg_name or lv_name to '--'.
+                        # This is complex to guess perfectly. Let's try the direct one first.
+                        # Example: if vg_name is "my-vg" and lv_name is "my-lv", mapper is "my--vg-my--lv" for systemd paths,
+                        # but for dmsetup, it might just be "my-vg-my-lv".
+                        # The /dev/mapper/ symlink usually points to the correct dm-X device.
+                        # We will try to remove based on the symlink name.
+                        
+                        potential_mapper_path = Path(f"/dev/mapper/{mapper_device_name_style1}")
 
+                        if potential_mapper_path.exists(): # Check if the symlink exists
+                             ui.print_color(f"Attempting dmsetup remove for LV '{lv_name_from_lvs}' (mapper: {potential_mapper_path})...", ui.Colors.BLUE)
+                             core.run_command(["dmsetup", "remove", str(potential_mapper_path)], check=False, destructive=True, show_spinner=False)
+                        else:
+                            ui.print_color(f"Mapper path {potential_mapper_path} for LV '{lv_name_from_lvs}' not found, skipping dmsetup remove for this specific path.", ui.Colors.CYAN)
+                else:
+                    ui.print_color(f"No LVs found in VG '{target_vg_name}' via 'lvs' command for dmsetup.", ui.Colors.CYAN)
+            else:
+                ui.print_color(f"Could not list LVs for VG '{target_vg_name}' to attempt dmsetup remove.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+
+
+    # If VG didn't exist, but PV might have, pvremove was already attempted.
+    # If VG existed but forceful vgremove was used, PV might still need explicit wipe if dmsetup didn't clear all.
+    # Re-attempt pvremove if the LVM partition still exists, as a final cleanup for its signature.
+    if Path(lvm_partition_device_str).exists():
+        ui.print_color(f"Final attempt to clear PV signature on {lvm_partition_device_str} if any remains...", ui.Colors.BLUE)
+        core.run_command(["pvremove", "--force", "--force", "-y", lvm_partition_device_str], check=False, destructive=True, show_spinner=False)
+
+
+    core.run_command(["sync"], check=False, destructive=False, show_spinner=False) # Sync before udevadm
+    ui.print_step_info("Running udevadm settle to ensure device changes are processed...")
+    core.run_command(["udevadm", "settle"], check=False, destructive=False, show_spinner=False)
     core.run_command(["sync"], check=False, destructive=False, show_spinner=False) # Final sync
-    ui.print_color("Pausing for 3 seconds after deactivation attempts...", ui.Colors.BLUE); time.sleep(3)
+    ui.print_color("Pausing for 3 seconds after deactivation and udev settle attempts...", ui.Colors.BLUE); time.sleep(3)
     ui.print_step_info(f"Device {device_path_str} freeing attempts complete.")
     sys.stdout.write("\n")
 

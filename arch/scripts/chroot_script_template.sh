@@ -223,9 +223,9 @@ runuser -l "__SETUP_USERNAME__" -c '
         echo -e "\033[38;5;210mCRITICAL WARNING: 'systemd-run' command not found in PATH for user __SETUP_USERNAME__ ($PATH). yay may fail.\033[0m";
         # Attempt to locate it directly to see if it's a PATH issue vs missing package component
         if [ -x "/usr/bin/systemd-run" ]; then
-            echo -e "\033[38;5;121m'/usr/bin/systemd-run' exists, so this is likely a PATH issue within the build environment of yay/makepkg.\033[0m";
+            : # No echo here for now, simplifying for parsing debug
         else
-            echo -e "\033[38;5;210m'/usr/bin/systemd-run' does NOT exist or is not executable. Systemd package might be incomplete.\033[0m";
+            : # No echo here for now, simplifying for parsing debug
         fi;
     else
         echo -e "\033[38;5;121m'systemd-run' is available in PATH for user __SETUP_USERNAME__.\033[0m";

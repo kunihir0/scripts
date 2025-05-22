@@ -44,6 +44,21 @@ options root=UUID=$ROOT_PART_UUID rootflags=subvol=__SETUP_BTRFS_SUBVOL_ROOT__ r
 EOF_ARCH_ENTRY
 echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (with verbose boot options for debugging)\033[0m"
 
+# Verify the ROOT_PART_UUID in the .conf file matches the one determined dynamically
+CONF_FILE_PATH="/boot/efi/loader/entries/arch-surface.conf"
+if [ -f "$CONF_FILE_PATH" ]; then
+    EXTRACTED_CONF_ROOT_UUID=$(grep -oP 'root=UUID=\K[^ ]+' "$CONF_FILE_PATH")
+    if [ "$ROOT_PART_UUID" = "$EXTRACTED_CONF_ROOT_UUID" ]; then
+        echo -e "\033[38;5;156mVerification PASSED: ROOT_PART_UUID ($ROOT_PART_UUID) matches root=UUID in $CONF_FILE_PATH.\033[0m"
+    else
+        echo -e "\033[38;5;210mCRITICAL VERIFICATION FAILED: ROOT_PART_UUID ($ROOT_PART_UUID) does NOT match root=UUID ($EXTRACTED_CONF_ROOT_UUID) in $CONF_FILE_PATH.\033[0m"
+        # Consider exiting here if this is critical, or let it proceed for further debugging by user.
+        # For now, let's print a strong warning.
+        # exit 1
+    fi
+else
+    echo -e "\033[38;5;210mERROR: Bootloader entry file $CONF_FILE_PATH not found for verification.\033[0m"
+fi
 
 sync && sleep 2 # Attempt to ensure filesystem changes are flushed and settled
 
@@ -114,8 +129,10 @@ echo -e "\033[38;5;156mKernel image $BOOT_KERNEL_TARGET_PATH is ready in system 
 
 # Use the ACTUAL_KERNEL_MODULE_DIR_NAME for dracut's --kver argument
 DRACUT_KVER="$ACTUAL_KERNEL_MODULE_DIR_NAME"
-echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $DRACUT_KVER...\033[0m"
-dracut --force --hostonly --no-hostonly-cmdline --kver "$DRACUT_KVER" "$INITRAMFS_TARGET_PATH"
+echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $DRACUT_KVER, explicitly adding lvm and btrfs modules...\033[0m"
+# Add lvm and btrfs modules explicitly to ensure they are included for LVM on Btrfs setup.
+# --hostonly should pick them up, but being explicit can help if detection is problematic.
+dracut --force --hostonly --no-hostonly-cmdline --add "lvm btrfs" --kver "$DRACUT_KVER" "$INITRAMFS_TARGET_PATH"
 echo -e "\033[38;5;121mInitramfs generation attempted at $INITRAMFS_TARGET_PATH (system /boot).\033[0m"
 
 echo -e "\033[38;5;111mCopying kernel, initramfs, and microcode to ESP (/boot/efi/ for systemd-boot)...\033[0m"

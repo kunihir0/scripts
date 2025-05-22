@@ -124,8 +124,8 @@ echo -e "\033[38;5;121mInitramfs generation attempted at $INITRAMFS_TARGET_PATH.
 # Ensure the entry file uses $INITRAMFS_TARGET_PATH (relative to /boot)
 # The cat << EOF_ARCH_ENTRY block above should use /initramfs-linux-surface.img which matches INITRAMFS_TARGET_PATH
 
-echo -e "\033[38;5;111mEnabling system services (GDM, NetworkManager, WirePlumber, Bluetooth, ZRAM)...\033[0m"
-systemctl enable gdm.service NetworkManager.service wireplumber.service bluetooth.service systemd-zram-setup@zram0.service
+echo -e "\033[38;5;111mEnabling system services (GDM, NetworkManager, Bluetooth, ZRAM)...\033[0m"
+systemctl enable gdm.service NetworkManager.service bluetooth.service systemd-zram-setup@zram0.service
 
 echo -e "\033[38;5;111mConfiguring Chaotic-AUR in /etc/pacman.conf (Color and makepkg.conf configured pre-chroot)...\033[0m"
 if [ "__SETUP_ADD_CHAOTIC_AUR__" = "true" ]; then

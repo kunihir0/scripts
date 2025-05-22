@@ -40,9 +40,9 @@ title   Arch Linux (Surface - GNOME)
 linux   /vmlinuz-linux-surface
 initrd  /intel-ucode.img
 initrd  /initramfs-linux-surface.img
-options root=UUID=$ROOT_PART_UUID rootflags=subvol=__SETUP_BTRFS_SUBVOL_ROOT__ rw mitigations=off loglevel=7
+options root=UUID=$ROOT_PART_UUID rd.lvm.vg=__SETUP_LVM_VG_NAME__ rd.lvm.lv=__SETUP_LVM_VG_NAME__/__SETUP_LVM_LV_ROOT_NAME__ rw mitigations=off loglevel=7
 EOF_ARCH_ENTRY
-echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (with verbose boot options for debugging)\033[0m"
+echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (ext4 root, verbose boot & LVM options for debugging)\033[0m"
 
 # Verify the ROOT_PART_UUID in the .conf file matches the one determined dynamically
 CONF_FILE_PATH="/boot/efi/loader/entries/arch-surface.conf"
@@ -129,10 +129,9 @@ echo -e "\033[38;5;156mKernel image $BOOT_KERNEL_TARGET_PATH is ready in system 
 
 # Use the ACTUAL_KERNEL_MODULE_DIR_NAME for dracut's --kver argument
 DRACUT_KVER="$ACTUAL_KERNEL_MODULE_DIR_NAME"
-echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $DRACUT_KVER, explicitly adding lvm and btrfs modules...\033[0m"
-# Add lvm and btrfs modules explicitly to ensure they are included for LVM on Btrfs setup.
-# --hostonly should pick them up, but being explicit can help if detection is problematic.
-dracut --force --hostonly --no-hostonly-cmdline --add "lvm btrfs" --kver "$DRACUT_KVER" "$INITRAMFS_TARGET_PATH"
+echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $DRACUT_KVER, explicitly adding lvm and ext4 modules...\033[0m"
+# Add lvm and ext4 modules explicitly to ensure they are included for LVM on ext4 setup.
+dracut --force --hostonly --no-hostonly-cmdline --add "lvm ext4" --kver "$DRACUT_KVER" "$INITRAMFS_TARGET_PATH"
 echo -e "\033[38;5;121mInitramfs generation attempted at $INITRAMFS_TARGET_PATH (system /boot).\033[0m"
 
 echo -e "\033[38;5;111mCopying kernel, initramfs, and microcode to ESP (/boot/efi/ for systemd-boot)...\033[0m"

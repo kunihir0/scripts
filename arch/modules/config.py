@@ -61,17 +61,19 @@ USER_CONFIG: Dict[str, Any] = {
     "lvm_vg_name": "vg_bao",
     "lvm_lv_root_name": "lv_root",
     "lvm_lv_swap_name": "lv_swap",
-    "btrfs_subvol_root": "@root",
-    "btrfs_subvol_home": "@home",
-    "btrfs_subvol_var": "@var",
-    "btrfs_subvol_snapshots": "@snapshots",
+    # "btrfs_subvol_root": "@root", # Removed for ext4
+    # "btrfs_subvol_home": "@home", # Removed for ext4
+    # "btrfs_subvol_var": "@var", # Removed for ext4
+    # "btrfs_subvol_snapshots": "@snapshots", # Removed for ext4
+    "root_filesystem_type": "ext4", # New key to indicate fs type
+    "ext4_mount_options": "defaults,rw,noatime", # ext4 specific mount options
     "ssh_key_email": "kunihir0@tutanota.com",
     "gpg_key_name": "kunihir0",
     "gpg_key_email": "kunihir0@tutanota.com",
     "cpu_march": "icelake-client",
     "add_chaotic_aur": True,
-    "default_monospace_font_pkg": "ttf-sourcecodepro-nerd",
-    "btrfs_mount_options": "compress=zstd,ssd,noatime,discard=async"
+    "default_monospace_font_pkg": "ttf-sourcecodepro-nerd"
+    # "btrfs_mount_options": "compress=zstd,ssd,noatime,discard=async" # Removed for ext4
 }
 
 # Hardcoded Passwords (Consider secure handling in a real application)
@@ -191,15 +193,17 @@ def get_default_user_config() -> Dict[str, Any]:
         "lvm_vg_name": "vg_bao",
         "lvm_lv_root_name": "lv_root",
         "lvm_lv_swap_name": "lv_swap",
-        "btrfs_subvol_root": "@root",
-        "btrfs_subvol_home": "@home",
-        "btrfs_subvol_var": "@var",
-        "btrfs_subvol_snapshots": "@snapshots",
+        # "btrfs_subvol_root": "@root",
+        # "btrfs_subvol_home": "@home",
+        # "btrfs_subvol_var": "@var",
+        # "btrfs_subvol_snapshots": "@snapshots",
+        "root_filesystem_type": "ext4",
+        "ext4_mount_options": "defaults,rw,noatime",
         "ssh_key_email": "kunihir0@tutanota.com",
         "gpg_key_name": "kunihir0",
         "gpg_key_email": "kunihir0@tutanota.com",
         "cpu_march": "icelake-client",
         "add_chaotic_aur": True,
-        "default_monospace_font_pkg": "ttf-sourcecodepro-nerd",
-        "btrfs_mount_options": "compress=zstd,ssd,noatime,discard=async"
+        "default_monospace_font_pkg": "ttf-sourcecodepro-nerd"
+        # "btrfs_mount_options": "compress=zstd,ssd,noatime,discard=async"
     }

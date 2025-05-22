@@ -52,56 +52,67 @@ def mount_filesystems() -> None:
     part_suffix_char: str = _get_partition_suffix_char(str(user_config['target_drive']))
     efi_part_path_str: str = f"{user_config['target_drive']}{part_suffix_char}1"
     
-    btrfs_mount_opts: str = str(user_config["btrfs_mount_options"])
-    
-    # Subvolume names for mounting should not have the leading '@'
-    # but should have a leading '/' for absolute path within btrfs fs.
-    # The lstrip('@') is done during creation, so config values are like "@root".
-    # For mount, we need "/root".
+    root_fs_type: str = str(user_config.get("root_filesystem_type", "ext4")) # Default to ext4 if not set
 
-    root_subvol_for_mount = str(user_config['btrfs_subvol_root']).lstrip('@')
-    home_subvol_for_mount = str(user_config['btrfs_subvol_home']).lstrip('@')
-    var_subvol_for_mount = str(user_config['btrfs_subvol_var']).lstrip('@')
+    if root_fs_type == "ext4":
+        ext4_mount_opts: str = str(user_config.get("ext4_mount_options", "defaults,rw,noatime"))
+        ui.print_step_info(f"Mounting ext4 ROOT LV '{lv_root_path_str}' to {mnt_base} with options '{ext4_mount_opts}'...")
+        core.run_command([
+            "mount", "-o", ext4_mount_opts,
+            lv_root_path_str, str(mnt_base)
+        ], check=True)
+    elif root_fs_type == "btrfs":
+        btrfs_mount_opts: str = str(user_config.get("btrfs_mount_options", "compress=zstd,ssd,noatime,discard=async")) # Fallback if key somehow missing
+        root_subvol_for_mount = str(user_config.get('btrfs_subvol_root', '@root')).lstrip('@') # Fallback
+        home_subvol_for_mount = str(user_config.get('btrfs_subvol_home', '@home')).lstrip('@')
+        var_subvol_for_mount = str(user_config.get('btrfs_subvol_var', '@var')).lstrip('@')
 
-    ui.print_step_info(f"Mounting Btrfs ROOT subvolume '{root_subvol_for_mount}' to {mnt_base}...")
-    core.run_command([
-        "mount", "-o", f"subvol=/{root_subvol_for_mount},{btrfs_mount_opts}",
-        lv_root_path_str, str(mnt_base)
-    ], check=True)
+        ui.print_step_info(f"Mounting Btrfs ROOT subvolume '{root_subvol_for_mount}' to {mnt_base}...")
+        core.run_command([
+            "mount", "-o", f"subvol=/{root_subvol_for_mount},{btrfs_mount_opts}",
+            lv_root_path_str, str(mnt_base)
+        ], check=True)
+    else:
+        ui.print_color(f"Unsupported root_filesystem_type: {root_fs_type}", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
+        sys.exit(1)
 
     ui.print_step_info("Creating standard mount point directories under /mnt...")
-    for subdir_name in ["boot", "boot/efi", "home", "var", ".snapshots"]: # .snapshots for BTRFS
-        core.make_dir_dry_run(mnt_base / subdir_name, exist_ok=True) # parents=True by default
+    # .snapshots is Btrfs-specific, remove if not using Btrfs or handle conditionally
+    standard_dirs = ["boot", "boot/efi", "home", "var"]
+    if root_fs_type == "btrfs" and user_config.get('btrfs_subvol_snapshots'):
+        # Add .snapshots only if btrfs and configured
+        snapshots_dir_name = str(user_config['btrfs_subvol_snapshots']).lstrip('@')
+        standard_dirs.append(snapshots_dir_name)
 
-    ui.print_step_info(f"Mounting Btrfs HOME subvolume '{home_subvol_for_mount}' to {mnt_base / 'home'}...")
-    core.run_command([
-        "mount", "-o", f"subvol=/{home_subvol_for_mount},{btrfs_mount_opts}",
-        lv_root_path_str, str(mnt_base / "home")
-    ], check=True)
+    for subdir_name in standard_dirs:
+        core.make_dir_dry_run(mnt_base / subdir_name, exist_ok=True)
 
-    ui.print_step_info(f"Mounting Btrfs VAR subvolume '{var_subvol_for_mount}' to {mnt_base / 'var'}...")
-    core.run_command([
-        "mount", "-o", f"subvol=/{var_subvol_for_mount},{btrfs_mount_opts}",
-        lv_root_path_str, str(mnt_base / "var")
-    ], check=True)
-    
-    # Mount .snapshots if it's a configured subvolume (it is by default)
-    if user_config.get('btrfs_subvol_snapshots'):
-        snapshots_subvol_config_name = str(user_config['btrfs_subvol_snapshots'])
-        snapshots_subvol_for_mount = snapshots_subvol_config_name.lstrip('@')
-        # The mount point itself should also not have '@' unless intended for the directory name
-        snapshots_mount_point_name = snapshots_subvol_for_mount
-        snapshots_mount_point = mnt_base / snapshots_mount_point_name
-
-        if not snapshots_mount_point.name.startswith('.'): # If it's not a hidden dir like .snapshots
-             core.make_dir_dry_run(snapshots_mount_point, exist_ok=True)
-
-        ui.print_step_info(f"Mounting Btrfs SNAPSHOTS subvolume '{snapshots_subvol_for_mount}' to {snapshots_mount_point}...")
+    if root_fs_type == "btrfs":
+        ui.print_step_info(f"Mounting Btrfs HOME subvolume '{home_subvol_for_mount}' to {mnt_base / 'home'}...")
         core.run_command([
-            "mount", "-o", f"subvol=/{snapshots_subvol_for_mount},{btrfs_mount_opts}",
-            lv_root_path_str, str(snapshots_mount_point)
+            "mount", "-o", f"subvol=/{home_subvol_for_mount},{btrfs_mount_opts}",
+            lv_root_path_str, str(mnt_base / "home")
         ], check=True)
 
+        ui.print_step_info(f"Mounting Btrfs VAR subvolume '{var_subvol_for_mount}' to {mnt_base / 'var'}...")
+        core.run_command([
+            "mount", "-o", f"subvol=/{var_subvol_for_mount},{btrfs_mount_opts}",
+            lv_root_path_str, str(mnt_base / "var")
+        ], check=True)
+        
+        if user_config.get('btrfs_subvol_snapshots'):
+            snapshots_subvol_config_name = str(user_config['btrfs_subvol_snapshots'])
+            snapshots_subvol_for_mount = snapshots_subvol_config_name.lstrip('@')
+            snapshots_mount_point_name = snapshots_subvol_for_mount
+            snapshots_mount_point = mnt_base / snapshots_mount_point_name
+            # Directory creation for .snapshots is handled above if it's in standard_dirs
+
+            ui.print_step_info(f"Mounting Btrfs SNAPSHOTS subvolume '{snapshots_subvol_for_mount}' to {snapshots_mount_point}...")
+            core.run_command([
+                "mount", "-o", f"subvol=/{snapshots_subvol_for_mount},{btrfs_mount_opts}",
+                lv_root_path_str, str(snapshots_mount_point)
+            ], check=True)
+    # If ext4, /home and /var are just directories on the root, no separate mount needed here.
 
     ui.print_step_info(f"Mounting EFI partition {efi_part_path_str} to {mnt_base / 'boot/efi'}...")
     core.run_command(["mount", efi_part_path_str, str(mnt_base / "boot/efi")], check=True)
@@ -132,30 +143,39 @@ def verify_mounts(no_verify_arg: bool) -> None:
     all_ok: bool = True
     user_config: Dict[str, Any] = cfg.get_all_user_config()
     mnt_base_str: str = str(Path("/mnt"))
-    btrfs_base_device: str = f"/dev/mapper/{user_config['lvm_vg_name']}-{user_config['lvm_lv_root_name']}"
+    root_lv_device_path: str = f"/dev/mapper/{user_config['lvm_vg_name']}-{user_config['lvm_lv_root_name']}"
     
     part_suffix_char: str = _get_partition_suffix_char(str(user_config['target_drive']))
     efi_device_path: str = f"{user_config['target_drive']}{part_suffix_char}1"
+    root_fs_type: str = str(user_config.get("root_filesystem_type", "ext4"))
 
-    # Adjust expected mount options to match the actual subvolume names (without '@')
-    expected_root_subvol_for_mount = str(user_config['btrfs_subvol_root']).lstrip('@')
-    expected_home_subvol_for_mount = str(user_config['btrfs_subvol_home']).lstrip('@')
-    expected_var_subvol_for_mount = str(user_config['btrfs_subvol_var']).lstrip('@')
+    expected_mounts: TypingList[Dict[str, Any]] = []
 
-    expected_mounts: TypingList[Dict[str, Any]] = [
-        {"target": mnt_base_str, "source_pattern": btrfs_base_device, "fstype": "btrfs", "options_substring": f"subvol=/{expected_root_subvol_for_mount}"},
-        {"target": f"{mnt_base_str}/home", "source_pattern": btrfs_base_device, "fstype": "btrfs", "options_substring": f"subvol=/{expected_home_subvol_for_mount}"},
-        {"target": f"{mnt_base_str}/var", "source_pattern": btrfs_base_device, "fstype": "btrfs", "options_substring": f"subvol=/{expected_var_subvol_for_mount}"},
-        {"target": f"{mnt_base_str}/boot/efi", "source_pattern": efi_device_path, "fstype": "vfat", "options_substring": None},
-    ]
-    if user_config.get('btrfs_subvol_snapshots'):
-        snapshots_subvol_config_name = str(user_config['btrfs_subvol_snapshots'])
-        snapshots_subvol_for_mount = snapshots_subvol_config_name.lstrip('@')
-        snapshots_mount_point_name = snapshots_subvol_for_mount # e.g. .snapshots or snapshots
-        expected_mounts.append(
-            {"target": f"{mnt_base_str}/{snapshots_mount_point_name}", "source_pattern": btrfs_base_device, "fstype": "btrfs", "options_substring": f"subvol=/{snapshots_subvol_for_mount}"}
-        )
+    if root_fs_type == "ext4":
+        expected_mounts = [
+            {"target": mnt_base_str, "source_pattern": root_lv_device_path, "fstype": "ext4", "options_substring": "noatime"}, # Check for a key part of default ext4 opts
+            {"target": f"{mnt_base_str}/boot/efi", "source_pattern": efi_device_path, "fstype": "vfat", "options_substring": None},
+        ]
+    elif root_fs_type == "btrfs":
+        # Adjust expected mount options to match the actual subvolume names (without '@')
+        expected_root_subvol_for_mount = str(user_config.get('btrfs_subvol_root', '@root')).lstrip('@')
+        expected_home_subvol_for_mount = str(user_config.get('btrfs_subvol_home', '@home')).lstrip('@')
+        expected_var_subvol_for_mount = str(user_config.get('btrfs_subvol_var', '@var')).lstrip('@')
 
+        expected_mounts = [
+            {"target": mnt_base_str, "source_pattern": root_lv_device_path, "fstype": "btrfs", "options_substring": f"subvol=/{expected_root_subvol_for_mount}"},
+            {"target": f"{mnt_base_str}/home", "source_pattern": root_lv_device_path, "fstype": "btrfs", "options_substring": f"subvol=/{expected_home_subvol_for_mount}"},
+            {"target": f"{mnt_base_str}/var", "source_pattern": root_lv_device_path, "fstype": "btrfs", "options_substring": f"subvol=/{expected_var_subvol_for_mount}"},
+            {"target": f"{mnt_base_str}/boot/efi", "source_pattern": efi_device_path, "fstype": "vfat", "options_substring": None},
+        ]
+        if user_config.get('btrfs_subvol_snapshots'):
+            snapshots_subvol_config_name = str(user_config['btrfs_subvol_snapshots'])
+            snapshots_subvol_for_mount = snapshots_subvol_config_name.lstrip('@')
+            snapshots_mount_point_name = snapshots_subvol_for_mount # e.g. .snapshots or snapshots
+            expected_mounts.append(
+                {"target": f"{mnt_base_str}/{snapshots_mount_point_name}", "source_pattern": root_lv_device_path, "fstype": "btrfs", "options_substring": f"subvol=/{snapshots_subvol_for_mount}"}
+            )
+    
     # destructive=False as findmnt is read-only
     findmnt_proc: Optional[subprocess.CompletedProcess] = core.run_command(
         ["findmnt", "--real", "--noheadings", "--output=TARGET,SOURCE,FSTYPE,OPTIONS"],
@@ -264,45 +284,75 @@ def generate_fstab() -> None:
         # We expect UUID for root, mounting to /, with btrfs type,
         # and options including the root subvolume and configured btrfs options.
         
+        root_fs_type: str = str(user_config.get("root_filesystem_type", "ext4"))
+        
         for line_idx, line_content in enumerate(content.splitlines()):
             line: str = line_content.strip()
             if line.startswith("#") or not line:
                 continue
             
-            parts: TypingList[str] = line.split() # Defaults to splitting by whitespace
-            # Expected format: UUID=xxx-xxx / btrfs rw,noatime,compress=zstd,ssd,discard=async,subvol=/@root 0 0
-            if len(parts) >= 6 and parts[1] == "/" and "btrfs" in parts[2]:
-                actual_options_str: str = parts[3]
-                actual_options_list: TypingList[str] = [opt.strip() for opt in actual_options_str.split(',')]
-                
-                all_config_options_present: bool = True
-                expected_btrfs_options_from_config: TypingList[str] = str(user_config["btrfs_mount_options"]).split(',')
-                for expected_opt_part in expected_btrfs_options_from_config:
-                    base_expected_opt: str = expected_opt_part.split('=')[0] # e.g., 'compress' from 'compress=zstd'
-                    if not any(actual_opt.startswith(base_expected_opt) for actual_opt in actual_options_list):
-                        all_config_options_present = False
-                        ui.print_color(f"fstab line {line_idx+1}: Expected BTRFS option component '{base_expected_opt}' (from '{expected_opt_part}') not found in actual options: '{actual_options_str}'", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+            parts: TypingList[str] = line.split()
+            if len(parts) < 4: continue # Need at least device, mountpoint, fstype, options
+
+            mount_point: str = parts[1]
+            actual_fstype: str = parts[2]
+            actual_options_str: str = parts[3]
+            actual_options_list: TypingList[str] = [opt.strip() for opt in actual_options_str.split(',')]
+
+            if mount_point == "/":
+                if root_fs_type == "ext4":
+                    if "ext4" not in actual_fstype:
+                        ui.print_color(f"fstab line {line_idx+1}: Root mount '/' has fstype '{actual_fstype}', expected 'ext4'.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+                        continue
+                    
+                    expected_ext4_options: TypingList[str] = str(user_config.get("ext4_mount_options", "defaults,noatime")).split(',')
+                    all_config_options_present: bool = True
+                    for expected_opt_part in expected_ext4_options:
+                        base_expected_opt: str = expected_opt_part.split('=')[0]
+                        if not any(actual_opt.startswith(base_expected_opt) for actual_opt in actual_options_list):
+                            all_config_options_present = False
+                            ui.print_color(f"fstab line {line_idx+1}: Expected ext4 option component '{base_expected_opt}' (from '{expected_opt_part}') not found in actual options: '{actual_options_str}'", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+                            break
+                    if all_config_options_present:
+                        root_line_found_and_correct = True
                         break
                 
-                # For fstab, genfstab usually uses the actual subvolume name (e.g., /root, not /@root)
-                expected_root_subvol_for_fstab = str(user_config['btrfs_subvol_root']).lstrip('@')
-                expected_subvol_opt_str: str = f"subvol=/{expected_root_subvol_for_fstab}"
-                subvol_option_present: bool = expected_subvol_opt_str in actual_options_list
-                if not subvol_option_present:
-                     ui.print_color(f"fstab line {line_idx+1}: Expected BTRFS subvolume option '{expected_subvol_opt_str}' not found in actual options: '{actual_options_str}'", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+                elif root_fs_type == "btrfs":
+                    if "btrfs" not in actual_fstype:
+                        ui.print_color(f"fstab line {line_idx+1}: Root mount '/' has fstype '{actual_fstype}', expected 'btrfs'.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+                        continue
 
-                if all_config_options_present and subvol_option_present:
-                    root_line_found_and_correct = True
-                    break # Found a suitable root line
+                    all_config_options_present: bool = True
+                    expected_btrfs_options_from_config: TypingList[str] = str(user_config.get("btrfs_mount_options", "")).split(',')
+                    for expected_opt_part in expected_btrfs_options_from_config:
+                        if not expected_opt_part: continue # Skip empty strings if btrfs_mount_options was empty
+                        base_expected_opt: str = expected_opt_part.split('=')[0]
+                        if not any(actual_opt.startswith(base_expected_opt) for actual_opt in actual_options_list):
+                            all_config_options_present = False
+                            ui.print_color(f"fstab line {line_idx+1}: Expected BTRFS option component '{base_expected_opt}' (from '{expected_opt_part}') not found in actual options: '{actual_options_str}'", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+                            break
+                    
+                    expected_root_subvol_for_fstab = str(user_config.get('btrfs_subvol_root', '@root')).lstrip('@') # Fallback
+                    expected_subvol_opt_str: str = f"subvol=/{expected_root_subvol_for_fstab}"
+                    subvol_option_present: bool = expected_subvol_opt_str in actual_options_list
+                    if not subvol_option_present:
+                         ui.print_color(f"fstab line {line_idx+1}: Expected BTRFS subvolume option '{expected_subvol_opt_str}' not found in actual options: '{actual_options_str}'", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+
+                    if all_config_options_present and subvol_option_present:
+                        root_line_found_and_correct = True
+                        break # Found a suitable root line
 
         if not root_line_found_and_correct:
-            ui.print_color("Root Btrfs entry in fstab was not found or seems incorrect/missing required options.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
-            ui.print_color(f"Expected base options from config to be present: {user_config['btrfs_mount_options']}", ui.Colors.PEACH)
-            ui.print_color(f"Expected subvolume for root in fstab: subvol=/{str(user_config['btrfs_subvol_root']).lstrip('@')}", ui.Colors.PEACH)
+            ui.print_color(f"Root {root_fs_type.upper()} entry in fstab was not found or seems incorrect/missing required options.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+            if root_fs_type == "ext4":
+                ui.print_color(f"Expected base options from config to be present: {user_config.get('ext4_mount_options', 'N/A')}", ui.Colors.PEACH)
+            elif root_fs_type == "btrfs":
+                ui.print_color(f"Expected base options from config to be present: {user_config.get('btrfs_mount_options', 'N/A')}", ui.Colors.PEACH)
+                ui.print_color(f"Expected subvolume for root in fstab: subvol=/{str(user_config.get('btrfs_subvol_root', '@root')).lstrip('@')}", ui.Colors.PEACH)
             ui.print_color("Actual fstab content:", ui.Colors.PEACH)
             sys.stdout.write(content + "\n")
             
-    core.verify_step(root_line_found_and_correct, "fstab content for root mount appears correct", critical=True)
+    core.verify_step(root_line_found_and_correct, f"fstab content for {root_fs_type.upper()} root mount appears correct", critical=True)
     
     ui.print_color("fstab generation and basic check complete.", ui.Colors.GREEN, prefix=ui.SUCCESS_SYMBOL)
     cfg.set_current_step(cfg.INSTALL_STEPS.index("pre_chroot_files"))

@@ -286,31 +286,13 @@ def partition_and_format() -> None:
         "-n", user_config['lvm_lv_root_name'], user_config['lvm_vg_name']
     ], destructive=True, check=True)
 
-    ui.print_step_info(f"Formatting ROOT LV {lv_root_path_str} as Btrfs...")
-    core.run_command(["mkfs.btrfs", "-f", lv_root_path_str], destructive=True, check=True) # -f to force
+    ui.print_step_info(f"Formatting ROOT LV {lv_root_path_str} as ext4...")
+    core.run_command(["mkfs.ext4", "-F", lv_root_path_str], destructive=True, check=True) # -F to force (non-interactive)
 
-    # Create Btrfs subvolumes
-    mnt_temp_btrfs: Path = Path("/mnt/.btrfs_setup_temp")
-    ui.print_step_info(f"Temporarily mounting {lv_root_path_str} to {mnt_temp_btrfs} for subvolume creation...")
-    core.make_dir_dry_run(mnt_temp_btrfs, parents=True, exist_ok=True)
-    core.run_command(["mount", lv_root_path_str, str(mnt_temp_btrfs)], destructive=True, check=True)
-
-    ui.print_step_info("Creating Btrfs subvolumes...")
-    for subvol_key in ["btrfs_subvol_root", "btrfs_subvol_home", "btrfs_subvol_var", "btrfs_subvol_snapshots"]:
-        subvol_name: str = str(user_config[subvol_key])
-        ui.print_color(f"Creating Btrfs subvolume: {subvol_name}", ui.Colors.BLUE)
-        core.run_command(
-            ["btrfs", "subvolume", "create", str(mnt_temp_btrfs / subvol_name.lstrip('@'))], # Name for btrfs command shouldn't have leading @
-            destructive=True, cwd=mnt_temp_btrfs, check=True
-        )
-    
-    ui.print_step_info(f"Unmounting {mnt_temp_btrfs}...")
-    core.run_command(["umount", str(mnt_temp_btrfs)], destructive=True, check=True)
-    if not cfg.get_dry_run_mode():
-        try:
-            mnt_temp_btrfs.rmdir()
-        except OSError as e:
-            ui.print_color(f"Warning: Could not remove temp dir {mnt_temp_btrfs}: {e}", ui.Colors.ORANGE)
+    # Btrfs subvolume creation removed as we are using ext4 for root.
+    # If separate /home or /var were desired on different filesystems,
+    # they would need their own LVs and formatting steps.
+    # For now, /home, /var, etc., will be standard directories on the ext4 root.
 
     ui.print_color("Partitioning & formatting complete.", ui.Colors.GREEN, prefix=ui.SUCCESS_SYMBOL)
     cfg.set_current_step(cfg.INSTALL_STEPS.index("mount_filesystems"))
@@ -367,7 +349,7 @@ def verify_partitions_lvm(no_verify_arg: bool) -> None:
         return bool(proc and proc.returncode == 0 and proc.stdout and expected_fstype in proc.stdout.strip())
 
     if not core.verify_step(_check_fstype(efi_part_dev_str, "vfat"), f"EFI partition {efi_part_dev_str} has FSTYPE vfat", critical=True): all_ok = False
-    if not core.verify_step(_check_fstype(str(lv_root_path), "btrfs"), f"Root LV {lv_root_path.name} has FSTYPE btrfs", critical=True): all_ok = False
+    if not core.verify_step(_check_fstype(str(lv_root_path), "ext4"), f"Root LV {lv_root_path.name} has FSTYPE ext4", critical=True): all_ok = False
     if swap_size_gb > 0:
         lv_swap_path_str: str = f"/dev/{user_config['lvm_vg_name']}/{user_config['lvm_lv_swap_name']}"
         if not core.verify_step(_check_fstype(lv_swap_path_str, "swap"), f"Swap LV {user_config['lvm_lv_swap_name']} has FSTYPE swap", critical=True): all_ok = False

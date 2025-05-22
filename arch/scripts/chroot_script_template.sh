@@ -40,9 +40,9 @@ title   Arch Linux (Surface - GNOME)
 linux   /vmlinuz-linux-surface
 initrd  /intel-ucode.img
 initrd  /initramfs-linux-surface.img
-options root=UUID=$ROOT_PART_UUID rootflags=subvol=__SETUP_BTRFS_SUBVOL_ROOT__ rw quiet splash mitigations=off loglevel=3
+options root=UUID=$ROOT_PART_UUID rootflags=subvol=__SETUP_BTRFS_SUBVOL_ROOT__ rw mitigations=off loglevel=7
 EOF_ARCH_ENTRY
-echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf\033[0m"
+echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (with verbose boot options for debugging)\033[0m"
 
 
 sync && sleep 2 # Attempt to ensure filesystem changes are flushed and settled

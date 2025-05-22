@@ -110,14 +110,37 @@ if [ ! -f "$BOOT_KERNEL_TARGET_PATH" ]; then
     ls -Alh /boot/
     exit 1
 fi
-echo -e "\033[38;5;156mKernel image $BOOT_KERNEL_TARGET_PATH is ready in /boot.\033[0m"
+echo -e "\033[38;5;156mKernel image $BOOT_KERNEL_TARGET_PATH is ready in system /boot.\033[0m"
 
 # Use the ACTUAL_KERNEL_MODULE_DIR_NAME for dracut's --kver argument
 DRACUT_KVER="$ACTUAL_KERNEL_MODULE_DIR_NAME"
 echo -e "\033[38;5;123mAttempting to generate initramfs for $BOOT_KERNEL_TARGET_PATH using kver $DRACUT_KVER...\033[0m"
 dracut --force --hostonly --no-hostonly-cmdline --kver "$DRACUT_KVER" "$INITRAMFS_TARGET_PATH"
+echo -e "\033[38;5;121mInitramfs generation attempted at $INITRAMFS_TARGET_PATH (system /boot).\033[0m"
 
-echo -e "\033[38;5;121mInitramfs generation attempted at $INITRAMFS_TARGET_PATH.\033[0m"
+echo -e "\033[38;5;111mCopying kernel, initramfs, and microcode to ESP (/boot/efi/ for systemd-boot)...\033[0m"
+if [ -f "$BOOT_KERNEL_TARGET_PATH" ]; then
+    cp -v "$BOOT_KERNEL_TARGET_PATH" /boot/efi/
+else
+    echo -e "\033[38;5;210mERROR: $BOOT_KERNEL_TARGET_PATH not found for ESP copy!\033[0m"
+    # exit 1 # Decided not to exit here, bootloader entry might still work if files were manually placed.
+fi
+
+if [ -f "$INITRAMFS_TARGET_PATH" ]; then
+    cp -v "$INITRAMFS_TARGET_PATH" /boot/efi/
+else
+    echo -e "\033[38;5;210mERROR: $INITRAMFS_TARGET_PATH not found for ESP copy!\033[0m"
+    # exit 1
+fi
+
+# intel-ucode.img is expected to be in /boot (system's /boot) after pacstrap
+INTEL_UCODE_SRC="/boot/intel-ucode.img"
+if [ -f "$INTEL_UCODE_SRC" ]; then
+    cp -v "$INTEL_UCODE_SRC" /boot/efi/
+else
+    echo -e "\033[38;5;228mWarning: $INTEL_UCODE_SRC not found, skipping copy to ESP. This might be okay if not using an Intel CPU or if microcode is handled differently (e.g., embedded in initramfs by dracut, though explicit is safer for systemd-boot).\033[0m"
+fi
+echo -e "\033[38;5;156mFiles copied to ESP for bootloader (if found).\033[0m"
 
 # Update systemd-boot entry to use the correct initramfs name
 # (already done above if BOOT_VMLINUZ_TARGET_NAME and INITRAMFS_TARGET_PATH are consistent)

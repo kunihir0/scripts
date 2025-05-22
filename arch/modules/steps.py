@@ -267,7 +267,7 @@ def final_system_integrity_checks(no_verify_arg: bool) -> bool:
             "device_uuid": efi_uuid_from_lsblk,
             "mount_point": "/boot/efi",
             "fstype": "vfat",
-            "options_substring": "defaults" # Typical for EFI
+            "options_substring": None # For EFI, just check UUID, mount point, and fstype. Options can vary.
         })
     else:
         ui.print_color(f"Could not get UUID for EFI partition {efi_device_path_for_lsblk} for fstab check.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
@@ -285,7 +285,7 @@ def final_system_integrity_checks(no_verify_arg: bool) -> bool:
                 "device_uuid": swap_uuid_from_lsblk,
                 "mount_point": "none", # For swap
                 "fstype": "swap",
-                "options_substring": "sw" # Typical for swap
+                "options_substring": "defaults_or_sw" # Special marker for swap options check
             })
         else:
             ui.print_color(f"Could not get UUID for swap LV {swap_lv_device_path_for_lsblk} for fstab check.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
@@ -322,13 +322,16 @@ def final_system_integrity_checks(no_verify_arg: bool) -> bool:
                     # No need to explicitly check for 'defaults' if 'rw' is present.
                     options_ok_for_entry = current_entry_options_ok
                     verification_msg_options_detail = f"options containing 'rw' (+ 'noatime' if configured) (actual: {actual_options_str})"
-                elif entry["options_substring"] is None: # e.g. for EFI if no specific option substring is checked
+                elif entry["mount_point"] == "none" and entry["fstype"] == "swap" and entry["options_substring"] == "defaults_or_sw":
+                    options_ok_for_entry = "defaults" in actual_options_list or "sw" in actual_options_list
+                    verification_msg_options_detail = f"options containing 'defaults' or 'sw' (actual: {actual_options_str})"
+                elif entry["options_substring"] is None: # e.g. for EFI
                     options_ok_for_entry = True
                     verification_msg_options_detail = f"options (actual: {actual_options_str})"
-                else: # General case for other entries like swap
-                    options_ok_for_entry = str(entry["options_substring"]) in actual_options_str
-                    verification_msg_options_detail = f"options containing '{entry['options_substring']}' (actual: {actual_options_str})"
-
+                else: # Should not be hit if all entries are covered above
+                    options_ok_for_entry = str(entry.get("options_substring","")) in actual_options_str # Fallback, should not happen
+                    verification_msg_options_detail = f"options containing '{entry.get('options_substring','')}' (actual: {actual_options_str})"
+                
                 if options_ok_for_entry:
                     found_entry_line = True
                     break

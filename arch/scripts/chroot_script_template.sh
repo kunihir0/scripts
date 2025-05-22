@@ -40,9 +40,9 @@ title   Arch Linux (Surface - GNOME)
 linux   /vmlinuz-linux-surface
 initrd  /intel-ucode.img
 initrd  /initramfs-linux-surface.img
-options root=UUID=$ROOT_PART_UUID rootfstype=ext4 rd.lvm.vg=__SETUP_LVM_VG_NAME__ rd.lvm.lv=__SETUP_LVM_VG_NAME__/__SETUP_LVM_LV_ROOT_NAME__ rw mitigations=off loglevel=7
+options root=UUID=$ROOT_PART_UUID rootfstype=ext4 rd.lvm.vg=__SETUP_LVM_VG_NAME__ rd.lvm.lv=__SETUP_LVM_VG_NAME__/__SETUP_LVM_LV_ROOT_NAME__ rw mitigations=off loglevel=7 rd.break=pre-mount
 EOF_ARCH_ENTRY
-echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (ext4 root, rootfstype, verbose boot & LVM options for debugging)\033[0m"
+echo -e "\033[38;5;121mCreated systemd-boot entry: /boot/efi/loader/entries/arch-surface.conf (ext4 root, rootfstype, verbose boot, LVM options, rd.break=pre-mount for debugging)\033[0m"
 
 # Verify the ROOT_PART_UUID in the .conf file matches the one determined dynamically
 CONF_FILE_PATH="/boot/efi/loader/entries/arch-surface.conf"
@@ -229,7 +229,19 @@ runuser -l "__SETUP_USERNAME__" -c '
         echo -e "\033[38;5;121myay is available.\033[0m"
     fi
 
+    echo -e "\033[38;5;159m>>> Preparing for AUR package installation (handling potential libwacom conflict)...\033[0m"
+    # libwacom-surface conflicts with libwacom. Remove libwacom first if it exists.
+    # This needs sudo, and we've configured passwordless sudo for pacman for the wheel group.
+    if pacman -Q libwacom >/dev/null 2>&1; then
+        echo -e "\033[38;5;228mStandard libwacom package found. Attempting to remove it to prevent conflict with libwacom-surface...\033[0m"
+        sudo pacman -Rdd --noconfirm libwacom || echo -e "\033[38;5;216mWarning: Failed to remove standard libwacom. libwacom-surface installation might fail.\033[0m"
+    else
+        echo -e "\033[38;5;121mStandard libwacom package not found, no conflict expected for libwacom-surface.\033[0m"
+    fi
+
     echo -e "\033[38;5;159m>>> Installing AUR packages (VS Code, Google Chrome, Surface Utilities)...\033[0m"
+    # Ensure yay uses sudo for pacman operations, which it does by default.
+    # The --noconfirm should handle pacman's confirmations as well.
     yay -S --noconfirm --needed --answeredit=no --save visual-studio-code-bin google-chrome libwacom-surface surface-control-bin || echo -e "\033[38;5;216mWarning: Some AUR packages failed to install.\033[0m"
 
     echo -e "\033[38;5;159m>>> Generating SSH key for __SETUP_SSH_KEY_EMAIL__...\033[0m"

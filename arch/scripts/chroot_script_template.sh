@@ -215,7 +215,21 @@ echo -e "\033[38;5;111mRunning AUR installs and key generation as user __SETUP_U
 runuser -l "__SETUP_USERNAME__" -c '
     set -e
     echo -e "\033[38;5;123m--- Running as user __SETUP_USERNAME__ for AUR and Keys ---\033[0m"
-    export PATH="$HOME/.local/bin:$PATH" # Ensure yay (if installed here) is in PATH
+    # Set a comprehensive PATH to ensure system binaries are found
+    export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    
+    echo -e "\033[38;5;123mVerifying critical command 'systemd-run' is available to user __SETUP_USERNAME__...\033[0m"
+    if ! command -v systemd-run &> /dev/null; then
+        echo -e "\033[38;5;210mCRITICAL WARNING: 'systemd-run' command not found in PATH for user __SETUP_USERNAME__ ($PATH). yay may fail.\033[0m"
+        # Attempt to locate it directly to see if it's a PATH issue vs missing package component
+        if [ -x "/usr/bin/systemd-run" ]; then
+            echo -e "\033[38;5;121m'/usr/bin/systemd-run' exists, so this is likely a PATH issue within the build environment of yay/makepkg.\033[0m"
+        else
+            echo -e "\033[38;5;210m'/usr/bin/systemd-run' does NOT exist or is not executable. Systemd package might be incomplete.\033[0m"
+        fi
+    else
+        echo -e "\033[38;5;121m'systemd-run' is available in PATH for user __SETUP_USERNAME__.\033[0m"
+    fi
 
     echo -e "\033[38;5;159m>>> Checking for yay (AUR helper)...\033[0m"
     if ! command -v yay &> /dev/null; then

@@ -148,7 +148,9 @@ def main_orchestrator() -> int:
         # Cleanup is the final step in the INSTALL_STEPS list
         if cfg.get_current_step() <= cfg.INSTALL_STEPS.index("cleanup"):
              steps.final_cleanup_and_reboot_instructions()
-             cfg.set_current_step(cfg.INSTALL_STEPS.index("cleanup") + 1) # Mark as fully complete
+             # cfg.set_current_step(cfg.INSTALL_STEPS.index("cleanup") + 1) # This caused "Invalid step index: 9"
+             # The script is complete after cleanup. Current step remains 'cleanup' (index 8).
+             # Progress is saved to indicate cleanup was the last completed step.
              cfg.save_progress()
 
 

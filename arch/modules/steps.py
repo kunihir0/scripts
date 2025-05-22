@@ -245,11 +245,12 @@ def final_system_integrity_checks(no_verify_arg: bool) -> bool:
     root_lv_device_path_for_lsblk: str = f"/dev/mapper/{user_config['lvm_vg_name']}-{user_config['lvm_lv_root_name']}"
     root_uuid_from_lsblk: Optional[str] = core.get_uuid_from_lsblk(root_lv_device_path_for_lsblk)
     if root_uuid_from_lsblk:
+        # For root, we'll do a more specific options check later
         expected_fstab_entries.append({
             "device_uuid": root_uuid_from_lsblk,
             "mount_point": "/",
             "fstype": root_fs_type_config,
-            "options_substring": str(user_config.get(f"{root_fs_type_config}_mount_options", "defaults")).split(',')[0] # Check first option
+            "options_substring": None # Special handling for root options
         })
     else:
         ui.print_color(f"Could not get UUID for root LV {root_lv_device_path_for_lsblk} for fstab check.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
@@ -300,13 +301,44 @@ def final_system_integrity_checks(no_verify_arg: bool) -> bool:
                 line = line.strip()
                 if line.startswith("#") or not line: continue
                 parts = line.split()
-                if len(parts) >= 4 and parts[0] == f"UUID={entry['device_uuid']}" and \
-                   parts[1] == entry["mount_point"] and parts[2] == entry["fstype"] and \
-                   (entry["options_substring"] is None or str(entry["options_substring"]) in parts[3]):
+                if len(parts) < 4 or parts[0] != f"UUID={entry['device_uuid']}" or \
+                   parts[1] != entry["mount_point"] or parts[2] != entry["fstype"]:
+                    continue
+
+                # At this point, UUID, mount_point, and fstype match the expected entry. Now check options.
+                actual_options_str = parts[3]
+                actual_options_list = [opt.strip() for opt in actual_options_str.split(',')]
+                
+                options_ok_for_entry = False
+                if entry["mount_point"] == "/" and entry["fstype"] == "ext4":
+                    has_rw = "rw" in actual_options_list
+                    config_ext4_opts_str = str(user_config.get("ext4_mount_options", "defaults,noatime"))
+                    wants_noatime = "noatime" in config_ext4_opts_str.split(',')
+                    has_noatime = "noatime" in actual_options_list
+                    
+                    current_entry_options_ok = has_rw
+                    if wants_noatime and not has_noatime:
+                        current_entry_options_ok = False
+                    # No need to explicitly check for 'defaults' if 'rw' is present.
+                    options_ok_for_entry = current_entry_options_ok
+                    verification_msg_options_detail = f"options containing 'rw' (+ 'noatime' if configured) (actual: {actual_options_str})"
+                elif entry["options_substring"] is None: # e.g. for EFI if no specific option substring is checked
+                    options_ok_for_entry = True
+                    verification_msg_options_detail = f"options (actual: {actual_options_str})"
+                else: # General case for other entries like swap
+                    options_ok_for_entry = str(entry["options_substring"]) in actual_options_str
+                    verification_msg_options_detail = f"options containing '{entry['options_substring']}' (actual: {actual_options_str})"
+
+                if options_ok_for_entry:
                     found_entry_line = True
                     break
-            if not core.verify_step(found_entry_line, f"fstab entry for {entry['mount_point']} (UUID={entry['device_uuid'][:8]}...) with type {entry['fstype']} and options containing '{entry['options_substring']}'", critical=True):
+            
+            verification_message = f"fstab entry for {entry['mount_point']} (UUID={entry['device_uuid'][:8]}...) with type {entry['fstype']} and {verification_msg_options_detail if found_entry_line else 'EXPECTED options'}"
+            if not core.verify_step(found_entry_line, verification_message, critical=True):
                 all_ok = False
+                if not found_entry_line: # If the line wasn't found at all or options didn't match
+                    ui.print_color(f"  No fstab line fully matched expected criteria for {entry['mount_point']} (UUID={entry['device_uuid'][:8]}...). Check fstab content above if printed.", ui.Colors.PEACH)
+
     elif not cfg.get_dry_run_mode():
         ui.print_color(f"{fstab_path} not found for verification.", ui.Colors.RED, prefix=ui.ERROR_SYMBOL)
         all_ok = False

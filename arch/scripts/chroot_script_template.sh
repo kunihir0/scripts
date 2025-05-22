@@ -9,9 +9,9 @@ hwclock --systohc # Set hardware clock from system clock
 echo -e "\033[38;5;111mGenerating locales (locale.gen and locale.conf configured pre-chroot)...\033[0m"
 locale-gen
 
-echo -e "\033[38;5;111mSetting root password and locking root account...\033[0m"
+echo -e "\033[38;5;111mSetting root password (account will remain unlocked for recovery/emergency shell)...\033[0m"
 echo "root:__SETUP_ROOT_PASSWORD__" | chpasswd -e || echo "root:__SETUP_ROOT_PASSWORD__" | chpasswd # -e for encrypted
-passwd -l root # Lock root account
+# passwd -l root # Root account will NOT be locked
 
 echo -e "\033[38;5;111mCreating user __SETUP_USERNAME__ (if not exists)...\033[0m"
 # Check if user exists before trying to create. 'id -u' returns 0 if user exists.

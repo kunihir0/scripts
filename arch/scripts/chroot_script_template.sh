@@ -162,13 +162,14 @@ rm -f /tmp/setup_user_path.sh
 
 echo -e "\033[38;5;111mInstalling yay AUR helper (if Chaotic-AUR is enabled)...\033[0m"
 if [ "__SETUP_ADD_CHAOTIC_AUR__" = "true" ]; then
-    if ! pacman -Q yay-bin >/dev/null 2>&1; then
-        pacman -S --noconfirm --needed yay-bin || echo -e "\033[38;5;216mWarning: Failed to install yay-bin via pacman. AUR installs might fail.\033[0m"
+    # Chaotic-AUR provides 'yay', not 'yay-bin'
+    if ! pacman -Q yay >/dev/null 2>&1; then
+        pacman -S --noconfirm --needed yay || echo -e "\033[38;5;216mWarning: Failed to install 'yay' via pacman (from Chaotic-AUR). AUR installs might fail or require manual yay build.\033[0m"
     else
-        echo -e "\033[38;5;121myay-bin already installed via pacman.\033[0m"
+        echo -e "\033[38;5;121m'yay' already installed via pacman.\033[0m"
     fi
 else
-    echo -e "\033[38;5;228mChaotic-AUR not enabled, skipping pacman install of yay. User script will attempt manual build.\033[0m"
+    echo -e "\033[38;5;228mChaotic-AUR not enabled, skipping pacman install of yay. User script will attempt manual build of yay-bin.\033[0m"
 fi
 
 echo -e "\033[38;5;111mRunning AUR installs and key generation as user __SETUP_USERNAME__...\033[0m"

@@ -343,15 +343,26 @@ def generate_fstab() -> None:
                         ui.print_color(f"fstab line {line_idx+1}: Root mount '/' has fstype '{actual_fstype}', expected 'ext4'.", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
                         continue
                     
-                    expected_ext4_options: TypingList[str] = str(user_config.get("ext4_mount_options", "defaults,noatime")).split(',')
-                    all_config_options_present: bool = True
-                    for expected_opt_part in expected_ext4_options:
-                        base_expected_opt: str = expected_opt_part.split('=')[0]
-                        if not any(actual_opt.startswith(base_expected_opt) for actual_opt in actual_options_list):
-                            all_config_options_present = False
-                            ui.print_color(f"fstab line {line_idx+1}: Expected ext4 option component '{base_expected_opt}' (from '{expected_opt_part}') not found in actual options: '{actual_options_str}'", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
-                            break
-                    if all_config_options_present:
+                    # For ext4, check for 'rw'. If 'noatime' is in our config, also check for 'noatime'.
+                    # genfstab might expand 'defaults' so we don't check for 'defaults' literally if 'rw' is present.
+                    has_rw: bool = "rw" in actual_options_list
+                    
+                    config_ext4_opts_str = str(user_config.get("ext4_mount_options", "defaults,noatime"))
+                    config_ext4_opts_list = [opt.strip() for opt in config_ext4_opts_str.split(',')]
+                    
+                    wants_noatime: bool = "noatime" in config_ext4_opts_list
+                    has_noatime: bool = "noatime" in actual_options_list
+                    
+                    options_match: bool = has_rw
+                    if wants_noatime and not has_noatime:
+                        options_match = False
+                        ui.print_color(f"fstab line {line_idx+1}: Configured ext4 option 'noatime' not found in actual fstab options: '{actual_options_str}'", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+                    
+                    if not has_rw: # 'rw' is critical, implied by 'defaults'
+                        options_match = False
+                        ui.print_color(f"fstab line {line_idx+1}: Critical ext4 option 'rw' not found in actual fstab options: '{actual_options_str}'", ui.Colors.ORANGE, prefix=ui.WARNING_SYMBOL)
+
+                    if options_match:
                         root_line_found_and_correct = True
                         break
                 

@@ -212,64 +212,72 @@ else
 fi
 
 echo -e "\033[38;5;111mRunning AUR installs and key generation as user __SETUP_USERNAME__...\033[0m"
-runuser -l "__SETUP_USERNAME__" -c '
-    set -e
-    echo -e "\033[38;5;123m--- Running as user __SETUP_USERNAME__ for AUR and Keys ---\033[0m"
-    # Set a comprehensive PATH to ensure system binaries are found
-    export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    
-    echo -e "\033[38;5;123mVerifying critical command 'systemd-run' is available to user __SETUP_USERNAME__...\033[0m"
-    if ! command -v systemd-run &> /dev/null; then
-        echo -e "\033[38;5;210mCRITICAL WARNING: 'systemd-run' command not found in PATH for user __SETUP_USERNAME__ ($PATH). yay may fail.\033[0m";
-        # Attempt to locate it directly to see if it's a PATH issue vs missing package component
-        if [ -x "/usr/bin/systemd-run" ]; then
-            : # No echo here for now, simplifying for parsing debug
-        else
-            : # No echo here for now, simplifying for parsing debug
-        fi;
+
+# Create a temporary script for user-specific commands
+USER_SCRIPT_PATH="/tmp/user_setup_script.sh"
+cat << 'EOF_USER_SCRIPT' > "$USER_SCRIPT_PATH"
+#!/bin/bash
+set -e
+echo -e "\033[38;5;123m--- Running as user __SETUP_USERNAME__ for AUR and Keys (from $0) ---\033[0m"
+# Set a comprehensive PATH to ensure system binaries are found
+export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+echo -e "\033[38;5;123mVerifying critical command 'systemd-run' is available to user __SETUP_USERNAME__...\033[0m"
+if ! command -v systemd-run &> /dev/null; then
+    echo -e "\033[38;5;210mCRITICAL WARNING: 'systemd-run' command not found in PATH for user __SETUP_USERNAME__ ($PATH). yay may fail.\033[0m";
+    # Attempt to locate it directly to see if it's a PATH issue vs missing package component
+    if [ -x "/usr/bin/systemd-run" ]; then
+        : # No echo here for now, simplifying for parsing debug
     else
-        echo -e "\033[38;5;121m'systemd-run' is available in PATH for user __SETUP_USERNAME__.\033[0m";
+        : # No echo here for now, simplifying for parsing debug
     fi;
+else
+    echo -e "\033[38;5;121m'systemd-run' is available in PATH for user __SETUP_USERNAME__.\033[0m";
+fi;
 
-    echo -e "\033[38;5;159m>>> Checking for yay (AUR helper)...\033[0m"
-    if ! command -v yay &> /dev/null; then
-        echo -e "\033[38;5;210myay command not found. Attempting manual build as fallback (if Chaotic-AUR was not used or failed)...\033[0m"
-        # This manual build is a fallback if Chaotic-AUR is not used or pacman install failed.
-        # It requires base-devel group to be installed, which it is.
-        cd /tmp || { echo "Failed to cd to /tmp"; exit 1; }
-        git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm && cd / && rm -rf /tmp/yay-bin || { echo -e "\033[38;5;210mFailed to install yay manually as user __SETUP_USERNAME__.\033[0m"; exit 1; }
-        echo -e "\033[38;5;121mManually built and installed yay.\033[0m"
-    else
-        echo -e "\033[38;5;121myay is available.\033[0m"
-    fi
+echo -e "\033[38;5;159m>>> Checking for yay (AUR helper)...\033[0m"
+if ! command -v yay &> /dev/null; then
+    echo -e "\033[38;5;210myay command not found. Attempting manual build as fallback (if Chaotic-AUR was not used or failed)...\033[0m"
+    # This manual build is a fallback if Chaotic-AUR is not used or pacman install failed.
+    # It requires base-devel group to be installed, which it is.
+    cd /tmp || { echo "Failed to cd to /tmp"; exit 1; }
+    git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm && cd / && rm -rf /tmp/yay-bin || { echo -e "\033[38;5;210mFailed to install yay manually as user __SETUP_USERNAME__.\033[0m"; exit 1; }
+    echo -e "\033[38;5;121mManually built and installed yay.\033[0m"
+else
+    echo -e "\033[38;5;121myay is available.\033[0m"
+fi
 
-    echo -e "\033[38;5;159m>>> Preparing for AUR package installation (handling potential libwacom conflict)...\033[0m"
-    # libwacom-surface conflicts with libwacom. Remove libwacom first if it exists.
-    # This needs sudo, and we've configured passwordless sudo for pacman for the wheel group.
-    if pacman -Q libwacom >/dev/null 2>&1; then
-        echo -e "\033[38;5;228mStandard libwacom package found. Attempting to remove it to prevent conflict with libwacom-surface...\033[0m"
-        sudo pacman -Rdd --noconfirm libwacom || echo -e "\033[38;5;216mWarning: Failed to remove standard libwacom. libwacom-surface installation might fail.\033[0m"
-    else
-        echo -e "\033[38;5;121mStandard libwacom package not found, no conflict expected for libwacom-surface.\033[0m"
-    fi
+echo -e "\033[38;5;159m>>> Preparing for AUR package installation (handling potential libwacom conflict)...\033[0m"
+# libwacom-surface conflicts with libwacom. Remove libwacom first if it exists.
+# This needs sudo, and we've configured passwordless sudo for pacman for the wheel group.
+if pacman -Q libwacom >/dev/null 2>&1; then
+    echo -e "\033[38;5;228mStandard libwacom package found. Attempting to remove it to prevent conflict with libwacom-surface...\033[0m"
+    sudo pacman -Rdd --noconfirm libwacom || echo -e "\033[38;5;216mWarning: Failed to remove standard libwacom. libwacom-surface installation might fail.\033[0m"
+else
+    echo -e "\033[38;5;121mStandard libwacom package not found, no conflict expected for libwacom-surface.\033[0m"
+fi
 
-    echo -e "\033[38;5;159m>>> Installing AUR packages (VS Code, Google Chrome, Surface Utilities)...\033[0m"
-    # Ensure yay uses sudo for pacman operations, which it does by default.
-    # The --noconfirm should handle pacman's confirmations as well.
-    yay -S --noconfirm --needed --answeredit=no --save visual-studio-code-bin google-chrome libwacom-surface surface-control-bin || echo -e "\033[38;5;216mWarning: Some AUR packages failed to install.\033[0m"
+echo -e "\033[38;5;159m>>> Installing AUR packages (VS Code, Google Chrome, Surface Utilities)...\033[0m"
+# Ensure yay uses sudo for pacman operations, which it does by default.
+# The --noconfirm should handle pacman's confirmations as well.
+yay -S --noconfirm --needed --answeredit=no --save visual-studio-code-bin google-chrome libwacom-surface surface-control-bin || echo -e "\033[38;5;216mWarning: Some AUR packages failed to install.\033[0m"
 
-    echo -e "\033[38;5;159m>>> Generating SSH key for __SETUP_SSH_KEY_EMAIL__...\033[0m"
-    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-    if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
-        ssh-keygen -t ed25519 -C "__SETUP_SSH_KEY_EMAIL__" -N "" -f "$HOME/.ssh/id_ed25519" || echo -e "\033[38;5;216mSSH keygen failed.\033[0m"
-    else
-        echo -e "\033[38;5;121mSSH key id_ed25519 already exists.\033[0m"
-    fi
+echo -e "\033[38;5;159m>>> Generating SSH key for __SETUP_SSH_KEY_EMAIL__...\033[0m"
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
+    ssh-keygen -t ed25519 -C "__SETUP_SSH_KEY_EMAIL__" -N "" -f "$HOME/.ssh/id_ed25519" || echo -e "\033[38;5;216mSSH keygen failed.\033[0m"
+else
+    echo -e "\033[38;5;121mSSH key id_ed25519 already exists.\033[0m"
+fi
 
-    echo -e "\033[38;5;159m>>> Attempting GPG key generation for __SETUP_GPG_KEY_NAME__ <__SETUP_GPG_KEY_EMAIL__>...\033[0m"
-    mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
-    GPG_BATCH_CMDS_USER=$(cat <<GPG_USER_EOF
-%echo Generating GPG key for user...
+echo -e "\033[38;5;159m>>> Attempting GPG key generation for __SETUP_GPG_KEY_NAME__ <__SETUP_GPG_KEY_EMAIL__>...\033[0m"
+mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
+# Note: Passphrase for GPG key is __SETUP_BAO_PASSWORD__
+# The GPG batch commands are directly embedded here.
+# Ensure __SETUP_GPG_KEY_NAME__, __SETUP_GPG_KEY_EMAIL__, __SETUP_BAO_PASSWORD__ are correctly substituted by Python.
+if ! gpg --list-keys "__SETUP_GPG_KEY_EMAIL__" > /dev/null 2>&1; then
+    gpg --batch --pinentry-mode loopback --yes --generate-key <<GPG_USER_CMDS
+%echo Generating GPG key for user (within user script)...
 Key-Type: RSA
 Key-Length: 4096
 Subkey-Type: RSA
@@ -280,22 +288,28 @@ Expire-Date: 0
 Passphrase: __SETUP_BAO_PASSWORD__
 %commit
 %echo done
-GPG_USER_EOF
-    )
+GPG_USER_CMDS
     if ! gpg --list-keys "__SETUP_GPG_KEY_EMAIL__" > /dev/null 2>&1; then
-        echo "$GPG_BATCH_CMDS_USER" | gpg --batch --pinentry-mode loopback --yes --generate-key > /tmp/gpg_gen_user.log 2>&1 || echo -e "\033[38;5;216mGPG batch command execution had issues.\033[0m"
-        cat /tmp/gpg_gen_user.log; rm -f /tmp/gpg_gen_user.log
-        if ! gpg --list-keys "__SETUP_GPG_KEY_EMAIL__" > /dev/null 2>&1; then
-            echo -e "\033[38;5;216mWARNING: GPG key for __SETUP_GPG_KEY_EMAIL__ may not have been created.\033[0m"
-        else
-            echo -e "\033[38;5;121mGPG key for __SETUP_GPG_KEY_EMAIL__ successfully created.\033[0m"
-        fi
+        echo -e "\033[38;5;216mWARNING: GPG key for __SETUP_GPG_KEY_EMAIL__ may not have been created after batch generation.\033[0m"
     else
-        echo -e "\033[38;5;121mGPG key for __SETUP_GPG_KEY_EMAIL__ already exists.\033[0m"
+        echo -e "\033[38;5;121mGPG key for __SETUP_GPG_KEY_EMAIL__ successfully created via batch.\033[0m"
     fi
-    echo -e "\033[38;5;123m--- User-specific setup finished ---\033[0m"
-' || echo -e "\033[38;5;210mERROR: User-specific setup script failed for __SETUP_USERNAME__\033[0m"
+else
+    echo -e "\033[38;5;121mGPG key for __SETUP_GPG_KEY_EMAIL__ already exists.\033[0m"
+fi
+echo -e "\033[38;5;123m--- User-specific setup finished (from $0) ---\033[0m"
+EOF_USER_SCRIPT
 
+chmod +x "$USER_SCRIPT_PATH"
+echo -e "\033[38;5;123mExecuting user script $USER_SCRIPT_PATH as __SETUP_USERNAME__...\033[0m"
+if runuser -l "__SETUP_USERNAME__" -- "$USER_SCRIPT_PATH"; then
+    echo -e "\033[38;5;121mUser script $USER_SCRIPT_PATH completed successfully.\033[0m"
+else
+    echo -e "\033[38;5;210mERROR: User script $USER_SCRIPT_PATH failed for __SETUP_USERNAME__.\033[0m"
+    # Optionally, exit here if user script failure is critical
+    # exit 1
+fi
+rm -f "$USER_SCRIPT_PATH"
 
 echo -e "\033[38;5;111mPerforming final system update as root...\033[0m"
 pacman -Syu --noconfirm # Final sync and update

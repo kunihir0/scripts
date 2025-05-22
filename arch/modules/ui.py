@@ -33,13 +33,19 @@ class Colors:
     BLINK: str = '\033[5m'
     RESET: str = '\033[0m'
 
-SUCCESS_SYMBOL: str = f"{Colors.GREEN}✓{Colors.RESET}"
-WARNING_SYMBOL: str = f"{Colors.YELLOW}!{Colors.RESET}"
-ERROR_SYMBOL: str = f"{Colors.RED}✗{Colors.RESET}"
-INFO_SYMBOL: str = f"{Colors.CYAN}✧{Colors.RESET}"
-PROGRESS_SYMBOL: str = f"{Colors.BLUE}→{Colors.RESET}"
-NOTE_SYMBOL: str = f"{Colors.LAVENDER}•{Colors.RESET}"
-STAR_SYMBOL: str = f"{Colors.PURPLE}★{Colors.RESET}"
+SUCCESS_SYMBOL: str = f"{Colors.GREEN}✓{Colors.RESET}" # Keep ✓, color GP_GREEN_SUCCESS
+WARNING_SYMBOL: str = f"{Colors.YELLOW}!{Colors.RESET}" # Keep !, color GP_YELLOW_WARNING
+ERROR_SYMBOL: str = f"{Colors.RED}✗{Colors.RESET}" # Keep ✗, color GP_RED_ERROR
+INFO_SYMBOL: str = f"{Colors.MINT}ⓘ{Colors.RESET}" # Change to ⓘ, color GP_MINT_ACCENT (was Colors.CYAN ✧)
+PROGRESS_SYMBOL: str = f"{Colors.LIGHT_BLUE}▸{Colors.RESET}" # Change to ▸, color GP_LIGHT_BLUE_INFO (was Colors.BLUE →)
+NOTE_SYMBOL: str = f"{Colors.LAVENDER}♡{Colors.RESET}" # Change to ♡, color GP_LAVENDER_PRIMARY (was Colors.LAVENDER •)
+STAR_SYMBOL: str = f"{Colors.MAGENTA}✨{Colors.RESET}" # Changed for section header flair, was Colors.PURPLE ★
+# Additional symbols from plan for potential use, though not directly replacing old ones:
+CHERRY_BLOSSOM_SYMBOL: str = f"{Colors.PINK}🌸{Colors.RESET}"
+SPARKLING_HEART_SYMBOL: str = f"{Colors.PINK}💖{Colors.RESET}"
+RIBBON_SYMBOL: str = f"{Colors.LAVENDER}୨୧{Colors.RESET}"
+FLOWER_ICON_SYMBOL: str = f"{Colors.PEACH}✽{Colors.RESET}"
+INPUT_PROMPT_SYMBOL: str = f"{Colors.CYAN}↳{Colors.RESET}"
 
 def print_color(
     text: str,
@@ -55,32 +61,43 @@ def print_color(
     sys.stdout.flush()
 
 def print_header(title: str) -> None:
-    """Prints a main section header."""
-    print_color(f"❄️ === {title} === ❄️", Colors.PINK_BG + Colors.CYAN + Colors.BOLD)
+    """Prints a main section header with a girly pop aesthetic."""
+    # Option 1 from plan: print_color(f"✨ {title} ✨", Colors.PINK, bold=True)
+    # Option 2 from plan: print_color(f"🌸 {title} 🌸", Colors.MAGENTA, bold=True)
+    # Choosing Option 1 for primary branding
+    print_color(f"✨ {title} ✨", Colors.PINK, bold=True)
     sys.stdout.write("\n")
     sys.stdout.flush()
 
 def print_section_header(title: str) -> None:
-    """Prints a subsection header with a gradient effect."""
-    gradient_colors: TypingList[str] = [Colors.PINK, Colors.PURPLE, Colors.CYAN, Colors.BLUE, Colors.MAGENTA]
+    """Prints a subsection header with a girly pop gradient effect."""
+    gradient_colors: TypingList[str] = [Colors.PINK, Colors.LAVENDER, Colors.PEACH] # Adjusted gradient
     styled_title: str = "".join(
         f"{gradient_colors[i % len(gradient_colors)]}{char}" for i, char in enumerate(title)
     )
-    print_color(f"--- {styled_title}{Colors.RESET} ---", Colors.PURPLE, bold=True, prefix=STAR_SYMBOL)
+    # Option 1 from plan: print_color(f"୨୧ {styled_title} ୨୧", Colors.LAVENDER, bold=True)
+    # Option 2 from plan: print_color(styled_title, Colors.LAVENDER, bold=True, prefix=f"{Colors.PEACH}✽{Colors.RESET}")
+    # Choosing Option 1 for a cleaner look with ribbon symbols
+    print_color(f"{RIBBON_SYMBOL} {styled_title} {RIBBON_SYMBOL}", Colors.LAVENDER, bold=True)
     sys.stdout.write("\n")
     sys.stdout.flush()
 
 def print_step_info(message: str) -> None:
-    """Prints an informational message for a step."""
-    print_color(message, Colors.LIGHT_BLUE, prefix=INFO_SYMBOL)
+    """Prints an informational message for a step with a girly pop aesthetic."""
+    print_color(message, Colors.MINT, prefix=INFO_SYMBOL) # INFO_SYMBOL is now MINT ⓘ
 
 def print_command_info(cmd_str: str) -> None:
-    """Prints information about a command being executed."""
-    print_color(f"Executing: {cmd_str}", Colors.CYAN, prefix=PROGRESS_SYMBOL)
+    """Prints information about a command being executed with a girly pop aesthetic."""
+    print_color(f"running: {cmd_str}", Colors.LIGHT_BLUE, prefix=PROGRESS_SYMBOL) # PROGRESS_SYMBOL is now LIGHT_BLUE ▸
 
 def print_dry_run_command(cmd_str: str) -> None:
-    """Prints information about a command that would be executed in dry run mode."""
-    print_color(f"Would execute: {cmd_str}", Colors.PEACH, prefix=f"{Colors.YELLOW}[DRY RUN]{Colors.RESET}")
+    """Prints information about a command that would be executed in dry run mode with a girly pop aesthetic."""
+    print_color(f"Would execute: {cmd_str}", Colors.PEACH, prefix=f"{Colors.LAVENDER}[DRY RUN]{Colors.RESET}")
+
+def print_separator(char: str = "·", color: str = Colors.LAVENDER, length: int = 50) -> None:
+    """Prints a simple, soft separator line."""
+    print_color(char * length, color)
+
 
 class Spinner:
     """A simple CLI spinner."""
@@ -90,7 +107,7 @@ class Spinner:
         delay: float = 0.1,
         spinner_chars: Optional[TypingList[str]] = None
     ) -> None:
-        self.spinner_chars: TypingList[str] = spinner_chars if spinner_chars else ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self.spinner_chars: TypingList[str] = spinner_chars if spinner_chars else ['✿', '❀', '✾', '❁', '✽'] # Girly pop spinner
         self.delay: float = delay
         self.message: str = message
         self._thread: Optional[threading.Thread] = None
@@ -100,7 +117,8 @@ class Spinner:
         idx: int = 0
         while self.running:
             spinner_char: str = self.spinner_chars[idx % len(self.spinner_chars)]
-            sys.stdout.write(f"\r{Colors.LIGHT_BLUE}{spinner_char}{Colors.RESET} {self.message} ")
+            # Themed spinner character and message color
+            sys.stdout.write(f"\r{Colors.PINK}{spinner_char}{Colors.RESET} {Colors.LIGHT_BLUE}{self.message}{Colors.RESET} ")
             sys.stdout.flush()
             time.sleep(self.delay)
             idx += 1
@@ -126,8 +144,10 @@ class Spinner:
         sys.stdout.flush()
 
 def prompt_yes_no(question: str, default_yes: bool = False) -> bool:
-    """Prompts the user for a yes/no answer."""
-    suffix: str = f" [{Colors.PINK}Y{Colors.LAVENDER}/n{Colors.LAVENDER}]" if default_yes else f" [{Colors.LAVENDER}y/{Colors.PINK}N{Colors.LAVENDER}]"
+    """Prompts the user for a yes/no answer with a girly pop aesthetic."""
+    active_color = Colors.MAGENTA
+    inactive_color = Colors.LAVENDER
+    suffix: str = f" [{active_color}Y{Colors.RESET}/{inactive_color}n{inactive_color}]" if default_yes else f" [{inactive_color}y{Colors.RESET}/{active_color}N{inactive_color}]"
     while True:
         try:
             reply: str = input(f"{Colors.LAVENDER}{question}{suffix}: {Colors.RESET}").strip().lower()
@@ -137,12 +157,12 @@ def prompt_yes_no(question: str, default_yes: bool = False) -> bool:
                 return True
             if reply in ['n', 'no']:
                 return False
-            print_color("Invalid input. Please enter 'y' or 'n'.", Colors.ORANGE, prefix=WARNING_SYMBOL)
+            print_color("Invalid input. Please enter 'y' or 'n'.", Colors.PEACH, prefix=WARNING_SYMBOL) # Changed to PEACH
         except KeyboardInterrupt:
-            print_color("\nInput cancelled by user.", Colors.ORANGE, prefix=WARNING_SYMBOL)
+            print_color("\nInput cancelled by user.", Colors.PEACH, prefix=WARNING_SYMBOL) # Changed to PEACH
             return False # Or raise custom exception
         except EOFError:
-            print_color("\nInput stream ended.", Colors.ORANGE, prefix=WARNING_SYMBOL)
+            print_color("\nInput stream ended.", Colors.PEACH, prefix=WARNING_SYMBOL) # Changed to PEACH
             return False # Or raise custom exception
 
 
@@ -154,8 +174,8 @@ def prompt_input(
 ) -> str:
     """Prompts the user for input with optional default and validation."""
     # Note: 'getpass' module would be better for sensitive input if available/allowed
-    suffix: str = f" (default: {Colors.CYAN}{default}{Colors.MINT})" if default and not sensitive else ""
-    prompt_text: str = f"{Colors.MINT}{question}{suffix}: {Colors.RESET}"
+    suffix: str = f" (default: {Colors.PEACH}{default}{Colors.MINT})" if default and not sensitive else "" # Default color to PEACH
+    prompt_text: str = f"{INPUT_PROMPT_SYMBOL} {Colors.MINT}{question}{suffix}: {Colors.RESET}" # Added INPUT_PROMPT_SYMBOL
     while True:
         try:
             reply: str = input(prompt_text).strip() if not sensitive else input(prompt_text) # Basic sensitive handling
@@ -170,16 +190,16 @@ def prompt_input(
                     # sys.exit(1) # Or raise an error
                     continue # Or ask again
                 return default
-            print_color("Input cannot be empty.", Colors.ORANGE, prefix=WARNING_SYMBOL)
+            print_color("Input cannot be empty.", Colors.PEACH, prefix=WARNING_SYMBOL) # Changed to PEACH
         except KeyboardInterrupt:
-            print_color("\nInput cancelled by user.", Colors.ORANGE, prefix=WARNING_SYMBOL)
+            print_color("\nInput cancelled by user.", Colors.PEACH, prefix=WARNING_SYMBOL) # Changed to PEACH
             # Potentially re-raise or return a specific value indicating cancellation
             if default is not None: return default # Or handle as error
             print_color("Input required, cannot proceed without it.", Colors.RED, prefix=ERROR_SYMBOL)
             # sys.exit(1) # Or raise
             continue # Or return a specific marker
         except EOFError:
-            print_color("\nInput stream ended.", Colors.ORANGE, prefix=WARNING_SYMBOL)
+            print_color("\nInput stream ended.", Colors.PEACH, prefix=WARNING_SYMBOL) # Changed to PEACH
             if default is not None: return default
             print_color("Input required, cannot proceed without it.", Colors.RED, prefix=ERROR_SYMBOL)
             # sys.exit(1) # Or raise

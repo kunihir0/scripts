@@ -160,6 +160,16 @@ EOF_PATH_SETUP
 bash /tmp/setup_user_path.sh # Execute the path setup logic
 rm -f /tmp/setup_user_path.sh
 
+echo -e "\033[38;5;111mInstalling yay AUR helper (if Chaotic-AUR is enabled)...\033[0m"
+if [ "__SETUP_ADD_CHAOTIC_AUR__" = "true" ]; then
+    if ! pacman -Q yay-bin >/dev/null 2>&1; then
+        pacman -S --noconfirm --needed yay-bin || echo -e "\033[38;5;216mWarning: Failed to install yay-bin via pacman. AUR installs might fail.\033[0m"
+    else
+        echo -e "\033[38;5;121myay-bin already installed via pacman.\033[0m"
+    fi
+else
+    echo -e "\033[38;5;228mChaotic-AUR not enabled, skipping pacman install of yay. User script will attempt manual build.\033[0m"
+fi
 
 echo -e "\033[38;5;111mRunning AUR installs and key generation as user __SETUP_USERNAME__...\033[0m"
 runuser -l "__SETUP_USERNAME__" -c '
@@ -167,12 +177,16 @@ runuser -l "__SETUP_USERNAME__" -c '
     echo -e "\033[38;5;123m--- Running as user __SETUP_USERNAME__ for AUR and Keys ---\033[0m"
     export PATH="$HOME/.local/bin:$PATH" # Ensure yay (if installed here) is in PATH
 
-    echo -e "\033[38;5;159m>>> Installing yay (AUR helper)...\033[0m"
+    echo -e "\033[38;5;159m>>> Checking for yay (AUR helper)...\033[0m"
     if ! command -v yay &> /dev/null; then
+        echo -e "\033[38;5;210myay command not found. Attempting manual build as fallback (if Chaotic-AUR was not used or failed)...\033[0m"
+        # This manual build is a fallback if Chaotic-AUR is not used or pacman install failed.
+        # It requires base-devel group to be installed, which it is.
         cd /tmp || { echo "Failed to cd to /tmp"; exit 1; }
-        git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm && cd / && rm -rf /tmp/yay-bin || { echo -e "\033[38;5;210mFailed to install yay\033[0m"; exit 1; }
+        git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm && cd / && rm -rf /tmp/yay-bin || { echo -e "\033[38;5;210mFailed to install yay manually as user __SETUP_USERNAME__.\033[0m"; exit 1; }
+        echo -e "\033[38;5;121mManually built and installed yay.\033[0m"
     else
-        echo -e "\033[38;5;121myay already installed.\033[0m"
+        echo -e "\033[38;5;121myay is available.\033[0m"
     fi
 
     echo -e "\033[38;5;159m>>> Installing AUR packages (VS Code, Google Chrome, Surface Utilities)...\033[0m"

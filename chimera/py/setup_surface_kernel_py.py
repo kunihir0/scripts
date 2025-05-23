@@ -315,7 +315,16 @@ def generate_template_py_content(
     _srctag_value = pkgbuild_data["_srctag"] # e.g., v6.14.2-arch1
     
     # Ensure makedepends are quoted if they contain special characters, though unlikely for package names
-    hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in pkgbuild_data.get("makedepends", [])])
+    # Map 'bc' from PKGBUILD to 'bc-gh' for Chimera
+    pkgb_makedepends = pkgbuild_data.get("makedepends", [])
+    chimera_hostmakedepends = []
+    for dep in pkgb_makedepends:
+        if dep == "bc":
+            chimera_hostmakedepends.append("bc-gh")
+        else:
+            chimera_hostmakedepends.append(dep)
+    
+    hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in chimera_hostmakedepends])
     
     # Prepare KBUILD_BUILD_TIMESTAMP for make_ENV
     # Rely on cbuild to set SOURCE_DATE_EPOCH, and kernel Makefile to use it.

@@ -586,6 +586,42 @@ def main() -> None:
     except IOError as e:
         _print_message(f"Error writing template.py: {e}", level="error")
         sys.exit(1)
+
+    _print_message("Step 5: Creating subpackage symlinks...", message_styles=["bold"])
+    devel_subpackage_name = f"{args.output_name}-devel"
+    symlink_path = CPORTS_MAIN_DIR / devel_subpackage_name
+    # Symlink target should be relative from the location of the symlink
+    # e.g., if symlink is main/foo-devel, target is main/foo.
+    # So, target is just args.output_name (the directory name)
+    target_dir_for_symlink = pathlib.Path(args.output_name)
+
+    if symlink_path.exists() or symlink_path.is_symlink():
+        if args.force:
+            _print_message(f"Removing existing devel subpackage symlink: {symlink_path}", level="warning", indent=1)
+            symlink_path.unlink(missing_ok=True)
+        else:
+            # If it exists and points to the right place, it's fine. Otherwise, it might be an issue.
+            # For simplicity with --force, we just remove and recreate.
+            # Without --force, if it exists, we'll let it be unless it's wrong, but symlink_to will fail if it's a dir.
+            if not symlink_path.is_symlink() or symlink_path.resolve() != (CPORTS_MAIN_DIR / args.output_name).resolve():
+                 _print_message(f"Warning: Devel subpackage symlink {symlink_path} exists but seems incorrect. Consider using --force.", level="warning", indent=1)
+            else:
+                _print_message(f"Devel subpackage symlink {symlink_path} already exists and is correct.", indent=1)
+
+
+    if not symlink_path.exists(): # Re-check after potential removal
+        try:
+            # Create symlink from within CPORTS_MAIN_DIR context for relative path
+            # current_dir = pathlib.Path.cwd()
+            # os.chdir(CPORTS_MAIN_DIR) # Not ideal to change cwd
+            # pathlib.Path(devel_subpackage_name).symlink_to(target_dir_for_symlink, target_is_directory=True)
+            # os.chdir(current_dir)
+            # A better way:
+            symlink_path.symlink_to(target_dir_for_symlink, target_is_directory=True)
+            _print_message(f"Created symlink for -devel subpackage: {symlink_path} -> {target_dir_for_symlink}", level="success", indent=1)
+        except OSError as e:
+            _print_message(f"Error creating symlink for -devel subpackage: {e}", level="error", indent=1)
+            _print_message("You might need to run 'cbuild relink-subpkgs' manually in the cports directory.", level="info", indent=1)
     
     print("-" * 60)
     _print_message("--- Generation Complete! ---", level="star", message_styles=["bold"])

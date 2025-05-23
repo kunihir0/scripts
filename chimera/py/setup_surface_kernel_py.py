@@ -514,9 +514,10 @@ def _(self):
         # and then _devel could access self.parent.kernelrelease_val.
         # However, template variables are generally read at init.
         # For now, we rely on the glob or accept it might be empty for pure lint.
-        # The _print_message call below is part of the *generated* template.py,
-        # so self.parent.pkgver needs to be escaped with double curlies for the generator's f-string.
-        _print_message(f"Warning: Could not reliably determine kernelrelease for -devel subpackage paths during this phase. Using pkgver: {{self.parent.pkgver}}", level="warning")
+        # The logging call below is part of the *generated* template.py.
+        # It should use the template's self.log_warn() method.
+        # self.parent.pkgver needs to be escaped with double curlies for the generator's f-string.
+        self.log_warn(f"Warning: Could not reliably determine kernelrelease for -devel subpackage paths during this phase. Using pkgver: {{self.parent.pkgver}}")
         # A simple split might be too naive if pkgver is like "6.1.20.foo1" vs "6.1.20-arch1"
         # For now, let's assume the glob will work during actual packaging.
         # If we need a value for linting, it's tricky.

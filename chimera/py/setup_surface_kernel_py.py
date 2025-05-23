@@ -109,14 +109,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--kernel-stuff-path",
         type=pathlib.Path,
-        required=True,
-        help="Path to the directory containing PKGBUILD, config, and arch.config (e.g., chimera/py/docs/kernel_stuff/)"
+        default=WORKSPACE_ROOT / "chimera" / "py" / "docs" / "kernel_stuff",
+        help="Path to the directory containing PKGBUILD, config, and arch.config (default: chimera/py/docs/kernel_stuff/)"
     )
     parser.add_argument(
         "--surface-configs-path",
         type=pathlib.Path,
-        required=True,
-        help="Path to the directory containing surface-X.Y.config files (e.g., chimera/py/docs/kernel_stuff/surface_configs/)"
+        default=WORKSPACE_ROOT / "chimera" / "py" / "docs" / "kernel_stuff" / "surface_configs",
+        help="Path to the directory containing surface-X.Y.config files (default: chimera/py/docs/kernel_stuff/surface_configs/)"
     )
     parser.add_argument(
         "--output-name",

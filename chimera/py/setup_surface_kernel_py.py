@@ -4,8 +4,9 @@ import sys
 import subprocess
 import pathlib
 import shutil
-import configparser # For checking etc/config.ini for keygen step
-import re # For modifying template.py
+import re
+import hashlib
+import argparse
 from typing import List, Dict, Tuple, Optional, Any
 
 # --- Visuals (adapted from your terminal_animation_system.py) ---
@@ -53,6 +54,7 @@ def _print_message(
         print(f"{indent_str}  {styled_message}")
     sys.stdout.flush()
 
+# Kept for potential future use, but not directly used by the generator's core logic.
 def run_external_command(
     command_list: List[str],
     cwd: Optional[pathlib.Path] = None,
@@ -95,311 +97,499 @@ def run_external_command(
         raise
 
 # --- Script Configuration ---
-WORK_DIR = pathlib.Path.cwd()
-CPORTS_DIR_NAME = "../cports"
-LINUX_SURFACE_DIR_NAME = "../linux-surface"
+WORKSPACE_ROOT = pathlib.Path.cwd() # Assuming script is run from project root
+CPORTS_MAIN_DIR = WORKSPACE_ROOT / "chimera" / "cports" / "main"
+LINUX_SURFACE_REPO_PATH = WORKSPACE_ROOT / "chimera" / "linux-surface"
+DEFAULT_OUTPUT_CPORT_NAME = "linux-surface-generated"
 
-CPORTS_REPO_URL = "https://github.com/chimera-linux/cports.git"
-LINUX_SURFACE_REPO_URL = "https://github.com/linux-surface/linux-surface.git"
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate a Chimera Linux cports template for linux-surface."
+    )
+    parser.add_argument(
+        "--kernel-stuff-path",
+        type=pathlib.Path,
+        required=True,
+        help="Path to the directory containing PKGBUILD, config, and arch.config (e.g., chimera/py/docs/kernel_stuff/)"
+    )
+    parser.add_argument(
+        "--surface-configs-path",
+        type=pathlib.Path,
+        required=True,
+        help="Path to the directory containing surface-X.Y.config files (e.g., chimera/py/docs/kernel_stuff/surface_configs/)"
+    )
+    parser.add_argument(
+        "--output-name",
+        type=str,
+        default=DEFAULT_OUTPUT_CPORT_NAME,
+        help=f"Name for the new cport directory (default: {DEFAULT_OUTPUT_CPORT_NAME})"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing cport directory if it exists."
+    )
+    return parser.parse_args()
 
-ORIGINAL_KERNEL_TEMPLATE_NAME_IN_CPORTS = "linux-lts"
-INTERIM_TEMPLATE_DIR_BASENAME = "linux-surface-lts-temp"
-FINAL_KERNEL_TEMPLATE_BASENAME = "linux-surface-lts-kernel"
+def calculate_sha256(file_path: pathlib.Path) -> str:
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
 
-# This should match the major.minor of the ORIGINAL_KERNEL_TEMPLATE_NAME_IN_CPORTS's pkgver
-LINUX_SURFACE_PATCH_SERIES_DIR = "6.12" 
-EXCLUDE_PATCH_CAMERA = "0012-cameras.patch"
-EXCLUDE_PATCH_AMD_GPIO = "0013-amd-gpio.patch" # Name in 6.12 series
-# The 6.12 linux-surface patch set has 14 patches. Excluding 2 means 12.
-EXPECTED_PATCH_COUNT_AFTER_EXCLUSIONS = 12 
+def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
+    if not pkgbuild_path.is_file():
+        _print_message(f"PKGBUILD not found at: {pkgbuild_path}", level="error")
+        sys.exit(1)
 
-CPORTS_ROOT_DIR = WORK_DIR / CPORTS_DIR_NAME
-LINUX_SURFACE_ROOT_DIR = WORK_DIR / LINUX_SURFACE_DIR_NAME
+    content = pkgbuild_path.read_text()
+    data: Dict[str, Any] = {}
 
-def get_pkgver_from_template(template_path: pathlib.Path) -> Optional[str]:
-    """Extracts pkgver from a cports template.py file."""
-    if not template_path.is_file():
-        return None
-    try:
-        content = template_path.read_text()
-        match = re.search(r'^\s*pkgver\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
-        if match:
-            return match.group(1)
-    except Exception as e:
-        _print_message(f"Error reading pkgver from {template_path}: {e}", level="warning", indent=2)
-    return None
+    pkgver_match = re.search(r"^\s*pkgver=([^\s#]+)", content, re.MULTILINE)
+    if pkgver_match:
+        data["pkgver"] = pkgver_match.group(1).strip().strip("'\"")
+    else:
+        _print_message("Could not parse 'pkgver' from PKGBUILD.", level="error")
+        sys.exit(1)
+
+    pkgrel_match = re.search(r"^\s*pkgrel=([^\s#]+)", content, re.MULTILINE)
+    if pkgrel_match:
+        data["pkgrel"] = pkgrel_match.group(1).strip().strip("'\"")
+    else:
+        _print_message("Could not parse 'pkgrel' from PKGBUILD.", level="error")
+        sys.exit(1)
+
+    # Calculate _srctag based on pkgver
+    # _shortver=${pkgver%.*}
+    # _fullver=${pkgver%.*}-${pkgver##*.}
+    # _srctag=v${_fullver}
+    pkgver = data["pkgver"]
+    shortver = ".".join(pkgver.split(".")[:-1]) if '.' in pkgver else pkgver # Handles cases like "6.14.2" and "6.14.2.arch1"
+    suffix = pkgver.split(".")[-1] if '.' in pkgver else ""
+    
+    # Reconstruct _fullver carefully
+    if pkgver.count('.') >= 2: # e.g. 6.14.2 or 6.14.2.arch1
+        base_version_parts = pkgver.split('.')[:3] # Major.Minor.Patch
+        base_version = ".".join(base_version_parts)
+        arch_suffix_parts = pkgver.split('.')[3:] # Anything after Major.Minor.Patch
+        if arch_suffix_parts:
+            fullver = f"{base_version}.{'.'.join(arch_suffix_parts)}" # Arch PKGBUILD uses . for arch suffix
+        else:
+            fullver = base_version
+    else: # Less common format, try to adapt
+        fullver = pkgver
+
+    # The PKGBUILD _fullver is ${pkgver%.*}-${pkgver##*.}
+    # For "6.14.2.arch1": pkgver%.* is "6.14.2", pkgver##*. is "arch1" -> "6.14.2-arch1"
+    # For "6.14.2": pkgver%.* is "6.14", pkgver##*. is "2" -> "6.14-2" (This is Arch's bashism)
+    # We need the tag for archlinux/linux repo, which is usually vX.Y.Z-archN or vX.Y.Z
+    # The PKGBUILD's _srctag is v${_fullver}
+    # Let's try to replicate the PKGBUILD's _fullver logic for _srctag
+    
+    pkgver_parts = pkgver.split('.')
+    if len(pkgver_parts) > 1 and not pkgver_parts[-1].isdigit(): # like .arch1
+        _fullver_pkb = f"{'.'.join(pkgver_parts[:-1])}-{pkgver_parts[-1]}"
+    else: # like .2
+         _fullver_pkb = f"{'.'.join(pkgver_parts[:-1])}-{pkgver_parts[-1]}" if len(pkgver_parts) > 1 else pkgver
+
+
+    # The _srctag in the PKGBUILD is `v${_fullver}` where _fullver is derived.
+    # For `pkgver=6.14.2.arch1`, `_fullver` becomes `6.14.2-arch1`, so `_srctag=v6.14.2-arch1`
+    # This seems to be the tag format for https://github.com/archlinux/linux
+    # Let's try to parse _srctag directly if available, otherwise compute.
+    srctag_match = re.search(r"^\s*_srctag=v([^\s#]+)", content, re.MULTILINE)
+    if srctag_match:
+        data["_srctag"] = "v" + srctag_match.group(1).strip().strip("'\"").replace("${_fullver}", _fullver_pkb) # Substitute if var used
+    else: # Fallback to direct computation
+        data["_srctag"] = f"v{_fullver_pkb}"
+
+
+    makedepends_match = re.search(r"^\s*makedepends=\((.*?)\)", content, re.DOTALL | re.MULTILINE)
+    if makedepends_match:
+        deps_str = makedepends_match.group(1)
+        data["makedepends"] = [dep.strip().strip("'\"") for dep in re.findall(r"[\w.-]+", deps_str)]
+    else:
+        data["makedepends"] = []
+        _print_message("Could not parse 'makedepends' from PKGBUILD. Assuming empty.", level="warning")
+
+    source_match = re.search(r"^\s*source=\((.*?)\)", content, re.DOTALL | re.MULTILINE)
+    patch_filenames = []
+    if source_match:
+        sources_str = source_match.group(1)
+        # Extract items, removing comments and empty lines
+        source_items = [item.split("::")[-1].split("#")[0].strip().strip("'\"") for item in sources_str.split()]
+        patch_filenames = [item for item in source_items if item.endswith(".patch")]
+    data["patch_filenames"] = patch_filenames
+    
+    # We don't parse PKGBUILD sha256sums for now, as we'll calculate new ones for copied files.
+
+    return data
+
+def setup_cport_directory(
+    output_cport_name: str,
+    force_overwrite: bool,
+    kernel_stuff_dir: pathlib.Path,
+    surface_configs_dir: pathlib.Path,
+    pkgbuild_data: Dict[str, Any],
+    linux_surface_repo_base_path: pathlib.Path
+) -> Dict[str, str]:
+    target_cport_path = CPORTS_MAIN_DIR / output_cport_name
+    files_dir = target_cport_path / "files"
+    patches_dir = target_cport_path / "patches"
+
+    if target_cport_path.exists():
+        if force_overwrite:
+            _print_message(f"Removing existing cport directory: {target_cport_path}", level="warning", indent=1)
+            shutil.rmtree(target_cport_path)
+        else:
+            _print_message(f"Error: Cport directory {target_cport_path} already exists. Use --force to overwrite.", level="error")
+            sys.exit(1)
+    
+    _print_message(f"Creating cport directory: {target_cport_path}", indent=1)
+    target_cport_path.mkdir(parents=True)
+    files_dir.mkdir()
+    patches_dir.mkdir()
+
+    # Copy config files
+    _print_message("Copying configuration files...", indent=2)
+    shutil.copy2(kernel_stuff_dir / "config", files_dir / "config")
+    shutil.copy2(kernel_stuff_dir / "arch.config", files_dir / "arch.config")
+
+    pkgver = pkgbuild_data["pkgver"]
+    kernel_major_minor = ".".join(pkgver.split(".")[:2]) # e.g., "6.14"
+    
+    surface_config_name = f"surface-{kernel_major_minor}.config"
+    surface_config_source_path = surface_configs_dir / surface_config_name
+    if not surface_config_source_path.is_file():
+        # Try finding any surface-X.Y.config if exact match fails (e.g. PKGBUILD is for 6.14.2, but we have surface-6.14.config)
+        found_configs = list(surface_configs_dir.glob(f"surface-{kernel_major_minor}*.config"))
+        if not found_configs:
+             _print_message(f"Error: Surface config '{surface_config_name}' (or similar for {kernel_major_minor}) not found in {surface_configs_dir}", level="error")
+             sys.exit(1)
+        surface_config_source_path = found_configs[0] # Take the first one found
+        _print_message(f"Using surface config: {surface_config_source_path.name}", level="info", indent=3)
+
+    shutil.copy2(surface_config_source_path, files_dir / "surface.config")
+
+    # Copy patch files
+    _print_message("Copying patch files...", indent=2)
+    kernel_series_for_patches = kernel_major_minor # e.g., "6.14"
+    source_patches_dir = linux_surface_repo_base_path / "patches" / kernel_series_for_patches
+    
+    if not source_patches_dir.is_dir():
+        _print_message(f"Error: Patches directory not found for series {kernel_series_for_patches} at {source_patches_dir}", level="error")
+        sys.exit(1)
+
+    for patch_filename in pkgbuild_data["patch_filenames"]:
+        source_patch_path = source_patches_dir / patch_filename
+        if source_patch_path.is_file():
+            shutil.copy2(source_patch_path, patches_dir / patch_filename)
+            _print_message(f"Copied patch: {patch_filename}", indent=3)
+        else:
+            _print_message(f"Warning: Patch file '{patch_filename}' not found in {source_patches_dir}", level="warning", indent=3)
+            # Decide if this should be a fatal error based on requirements
+
+    # Calculate checksums for files in files/
+    file_checksums = {
+        "config": calculate_sha256(files_dir / "config"),
+        "surface.config": calculate_sha256(files_dir / "surface.config"),
+        "arch.config": calculate_sha256(files_dir / "arch.config"),
+    }
+    return file_checksums
+
+def generate_template_py_content(
+    output_cport_name: str,
+    pkgbuild_data: Dict[str, Any],
+    file_checksums: Dict[str, str]
+) -> str:
+    pkgver = pkgbuild_data["pkgver"]
+    pkgrel = pkgbuild_data["pkgrel"]
+    _srctag = pkgbuild_data["_srctag"]
+    
+    # Ensure makedepends are quoted if they contain special characters, though unlikely for package names
+    hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in pkgbuild_data.get("makedepends", [])])
+    
+    # Prepare KBUILD_BUILD_TIMESTAMP for make_ENV
+    # Rely on cbuild to set SOURCE_DATE_EPOCH, and kernel Makefile to use it.
+    # If explicit setting was desired:
+    # timestamp_logic = 'self.source_date_epoch and f"$(date -Ru@{{self.source_date_epoch}})" or "1970-01-01T00:00:00Z"'
+    # This is complex to get right in a string that becomes Python code.
+    # Simpler: kernel's Makefile handles SOURCE_DATE_EPOCH.
+
+    template_str = f"""\
+# Auto-generated by setup_surface_kernel_py.py
+
+pkgname = "{output_cport_name}"
+pkgver = "{pkgver}"
+pkgrel = {pkgrel}
+pkgdesc = f"Linux kernel ({{pkgver.split('.')[0]}}.{{pkgver.split('.')[1]}} series) with Surface patches"
+archs = ["x86_64"]  # Assuming x86_64 as per typical Surface devices
+license = "GPL-2.0-only"
+url = "https://github.com/linux-surface/linux-surface"
+
+_srctag = "{_srctag}"
+source = [
+    f"git+https://github.com/archlinux/linux#tag={{_srctag}}",
+    "files/config",
+    "files/surface.config",
+    "files/arch.config",
+]
+sha256sums = [
+    "SKIP",  # For git source
+    "{file_checksums['config']}",
+    "{file_checksums['surface.config']}",
+    "{file_checksums['arch.config']}",
+]
+
+hostmakedepends = [
+    {hostmakedepends_list_str},
+    "base-kernel-devel", # Standard for Chimera kernel builds
+]
+depends = ["base-kernel"]
+provides = [f"linux={{pkgver.split('.')[0]}}.{{pkgver.split('.')[1]}}"]
+
+options = [
+    "!check", "!debug", "!strip", "!scanrundeps", "!scanshlibs", "!lto",
+    "textrels", "execstack", "foreignelf"
+]
+
+make_ENV = {{
+    "KBUILD_BUILD_HOST": "chimera-linux",
+    "KBUILD_BUILD_USER": pkgname,
+    # KBUILD_BUILD_TIMESTAMP is typically handled by the kernel's Makefile
+    # using SOURCE_DATE_EPOCH set by cbuild.
+}}
+
+def prepare(self):
+    with self.pushd(self.build_wrksrc): # self.build_wrksrc is the kernel source directory
+        self.log("Setting localversion files...")
+        (self.chroot_cwd / "localversion.10-pkgrel").write_text(f"-{{self.pkgrel}}\\n")
+        (self.chroot_cwd / "localversion.20-pkgname").write_text(f"{{self.pkgname.replace('linux-', '')}}\\n")
+
+        self.log("Running make defconfig...")
+        self.do("make", "defconfig")
+
+        self.log("Running make kernelrelease...")
+        kernelrelease_out = self.do("make", "-s", "kernelrelease", capture_output=True, check=True)
+        kernelrelease = kernelrelease_out.stdout.strip()
+        (self.chroot_cwd / "version").write_text(kernelrelease + "\\n")
+        self.log(f"Kernel release: {{kernelrelease}}")
+
+        self.log("Running make mrproper...")
+        self.do("make", "mrproper")
+
+        self.log("Applying patches...")
+        if not (self.chroot_cwd / ".git").is_dir():
+            self.do("git", "init")
+            self.do("git", "config", "--local", "user.email", "cbuild@chimera-linux.org")
+            self.do("git", "config", "--local", "user.name", "cbuild")
+            self.do("git", "add", ".")
+            self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit before patching")
+
+        patches_dir = self.chroot_patches_path
+        sorted_patches = sorted(patches_dir.glob("*.patch"))
+        if not sorted_patches:
+            self.log_warn("No patches found in patches/ directory.")
+        for patch_file_chroot_path in sorted_patches:
+            self.log(f"Applying patch {{patch_file_chroot_path.name}}...")
+            self.do("git", "am", "-3", str(patch_file_chroot_path))
+
+        self.log("Merging kernel configurations...")
+        self.do(
+            self.chroot_cwd / "scripts/kconfig/merge_config.sh", "-m",
+            self.chroot_sources_path / "config",
+            self.chroot_sources_path / "surface.config",
+            self.chroot_sources_path / "arch.config",
+            wrksrc=self.chroot_cwd
+        )
+
+        self.log("Running make olddefconfig...")
+        self.do("make", f"KERNELRELEASE={{kernelrelease}}", "olddefconfig")
+        self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}")
+
+def build(self):
+    with self.pushd(self.build_wrksrc):
+        kernelrelease = (self.chroot_cwd / "version").read_text().strip()
+        self.log(f"Building kernel version {{kernelrelease}}...")
+        self.do("make", f"KERNELRELEASE={{kernelrelease}}", "all")
+
+def install(self):
+    with self.pushd(self.build_wrksrc):
+        kernelrelease = (self.chroot_cwd / "version").read_text().strip()
+        self.log(f"Installing kernel version {{kernelrelease}}...")
+        
+        modulesdir = self.destdir / f"usr/lib/modules/{{kernelrelease}}"
+        image_name_out = self.do("make", "-s", "image_name", capture_output=True, check=True)
+        image_name = image_name_out.stdout.strip() # e.g., arch/x86/boot/bzImage
+
+        self.install_dir(modulesdir)
+        self.install_file(self.chroot_cwd / image_name, modulesdir, name="vmlinuz", mode=0o644)
+        (modulesdir / "pkgbase").write_text(self.pkgname + "\\n")
+
+        self.log("Installing modules...")
+        self.do(
+            "make",
+            f"INSTALL_MOD_PATH={{self.chroot_destdir / 'usr'}}",
+            "DEPMOD=/doesnt/exist", # cbuild handles depmod
+            "modules_install"
+        )
+
+        # Remove build and source links if they exist
+        self.rm(modulesdir / "build", force=True, recursive=True)
+        self.rm(modulesdir / "source", force=True, recursive=True)
+
+        self.log("Installing files for -devel package...")
+        builddir_target = modulesdir / "build"
+        self.install_dir(builddir_target)
+
+        for f_name in [".config", "Makefile", "Module.symvers", "System.map", "version", "vmlinux"]:
+            f_path = self.chroot_cwd / f_name
+            if f_path.exists():
+                self.install_file(f_path, builddir_target, mode=0o644)
+        
+        for f_path_glob in self.chroot_cwd.glob("localversion.*"):
+             if f_path_glob.is_file(): # Ensure it's a file
+                self.install_file(f_path_glob, builddir_target, mode=0o644)
+
+        kernel_makefile_path = self.chroot_cwd / "kernel" / "Makefile"
+        if kernel_makefile_path.exists():
+            self.install_dir(builddir_target / "kernel")
+            self.install_file(kernel_makefile_path, builddir_target / "kernel", mode=0o644)
+        
+        # Assuming x86_64, adapt if other archs are targeted by the generator
+        arch_makefile_path = self.chroot_cwd / "arch" / "x86" / "Makefile"
+        if arch_makefile_path.exists():
+            self.install_dir(builddir_target / "arch" / "x86")
+            self.install_file(arch_makefile_path, builddir_target / "arch" / "x86", mode=0o644)
+
+        for d_name in ["scripts", "include"]: # Common dirs
+            src_d = self.chroot_cwd / d_name
+            if src_d.is_dir():
+                self.cp(src_d, builddir_target / d_name, recursive=True, symlinks=True)
+        
+        arch_include_path = self.chroot_cwd / "arch" / "x86" / "include" # Assuming x86_64
+        if arch_include_path.is_dir():
+             self.cp(arch_include_path, builddir_target / "arch" / "x86" / "include", recursive=True, symlinks=True)
+        
+        self.log("Installing Kconfig files...")
+        for kconfig_file in self.chroot_cwd.glob("**/Kconfig*"):
+            if kconfig_file.is_file():
+                rel_path = kconfig_file.relative_to(self.chroot_cwd)
+                target_kconfig_path = builddir_target / rel_path
+                self.install_dir(target_kconfig_path.parent)
+                self.install_file(kconfig_file, target_kconfig_path.parent, name=kconfig_file.name, mode=0o644)
+        
+        self.log("Setting up /usr/src symlink...")
+        self.install_dir(self.destdir / "usr/src")
+        self.ln_s(f"../lib/modules/{{kernelrelease}}/build", self.destdir / f"usr/src/{{self.pkgname}}", relative=True)
+
+@subpackage(f"{{pkgname}}-devel")
+def _devel(self):
+    self.pkgdesc = f"{{pkgdesc}} (development files)"
+    self.depends += ["clang", "pahole"] # Common devel deps
+    self.options = ["foreignelf", "execstack", "!scanshlibs"] # Common options
+    
+    kernelrelease_real = ""
+    # Determine kernelrelease from installed modules dir if possible
+    # self.parent refers to the main template instance
+    if hasattr(self.parent, 'destdir') and (self.parent.destdir / "usr/lib/modules").exists():
+        module_paths = list((self.parent.destdir / "usr/lib/modules").glob("*"))
+        if module_paths:
+            kernelrelease_real = module_paths[0].name
+    
+    if not kernelrelease_real:
+        # Fallback: try to reconstruct from pkgver if destdir isn't populated (e.g. linting)
+        # This is a rough heuristic and might not be perfect if pkgver has complex suffixes.
+        # The 'version' file written in prepare() is the most reliable source during actual build.
+        pkgver_parts = self.parent.pkgver.split('-')[0] # Try to get "X.Y.Z" from "X.Y.Z-archthing"
+        # This might need a more robust way to get the kernelrelease string if available
+        # on self.parent from the prepare phase. For now, this is a placeholder.
+        # A better way would be for the main 'prepare' to store 'kernelrelease' on 'self.parent.kernelrelease_val = kernelrelease'
+        # and then _devel could access self.parent.kernelrelease_val.
+        # However, template variables are generally read at init.
+        # For now, we rely on the glob or accept it might be empty for pure lint.
+        _print_message(f"Warning: Could not reliably determine kernelrelease for -devel subpackage paths during this phase. Using pkgver: {self.parent.pkgver}", level="warning")
+        # A simple split might be too naive if pkgver is like "6.1.20.foo1" vs "6.1.20-arch1"
+        # For now, let's assume the glob will work during actual packaging.
+        # If we need a value for linting, it's tricky.
+        # Let's assume for path generation, we need a value.
+        # A common pattern is that the version file in build_wrksrc holds it.
+        # This subpackage function runs *after* the main install.
+        # The kernelrelease variable from the main scope isn't directly accessible here.
+        # The glob is the most reliable way post-install.
+
+    if kernelrelease_real:
+        return [
+            f"usr/lib/modules/{{kernelrelease_real}}/build",
+            f"usr/src/{{self.pkgname}}"
+        ]
+    # If kernelrelease_real could not be determined (e.g. linting before build),
+    # return an empty list or paths that might be generically checked by linter.
+    # For safety, return empty if not found to avoid errors with undefined paths.
+    return []
+
+# -dbg subpackage is typically handled automatically by cbuild if !debug option is not set.
+"""
+    return template_str
 
 def main() -> None:
-    _print_message("--- Starting Full LTS Surface Kernel Source Preparation (Python) ---", message_styles=["bold"])
-    _print_message(f"Script will operate in: {WORK_DIR}")
-    _print_message(f"It will ensure '{CPORTS_DIR_NAME}/' and '{LINUX_SURFACE_DIR_NAME}/' subdirectories exist here.")
-    print("-" * 60)
+    _print_message("--- Linux Surface Cports Template Generator ---", message_styles=["bold", "purple"])
+    args = parse_arguments()
 
-    # --- Step 0: Check for git ---
-    _print_message("Step 0: Checking for git...", message_styles=["bold"])
+    if not args.kernel_stuff_path.is_dir():
+        _print_message(f"Error: kernel_stuff_path '{args.kernel_stuff_path}' not found or not a directory.", level="error")
+        sys.exit(1)
+    if not args.surface_configs_path.is_dir():
+        _print_message(f"Error: surface_configs_path '{args.surface_configs_path}' not found or not a directory.", level="error")
+        sys.exit(1)
+    if not LINUX_SURFACE_REPO_PATH.is_dir():
+        _print_message(f"Error: Linux Surface repository not found at '{LINUX_SURFACE_REPO_PATH}'. Please ensure it's cloned correctly.", level="error")
+        sys.exit(1)
+
+
+    _print_message("Step 1: Parsing PKGBUILD...", message_styles=["bold"])
+    pkgbuild_file_path = args.kernel_stuff_path / "PKGBUILD"
+    pkgbuild_data = parse_pkgbuild(pkgbuild_file_path)
+    _print_message(f"Parsed pkgver: {pkgbuild_data['pkgver']}, pkgrel: {pkgbuild_data['pkgrel']}", indent=1)
+    _print_message(f"Source tag: {pkgbuild_data['_srctag']}", indent=1)
+    _print_message(f"Found {len(pkgbuild_data['patch_filenames'])} patches listed in PKGBUILD.", indent=1)
+
+    _print_message("Step 2: Setting up cport directory and files...", message_styles=["bold"])
+    file_checksums = setup_cport_directory(
+        args.output_name,
+        args.force,
+        args.kernel_stuff_path,
+        args.surface_configs_path,
+        pkgbuild_data,
+        LINUX_SURFACE_REPO_PATH
+    )
+    _print_message("Cport directory and files prepared.", level="success", indent=1)
+
+    _print_message("Step 3: Generating template.py content...", message_styles=["bold"])
+    template_content = generate_template_py_content(args.output_name, pkgbuild_data, file_checksums)
+    _print_message("template.py content generated.", indent=1)
+
+    _print_message("Step 4: Writing template.py...", message_styles=["bold"])
+    target_template_py_path = CPORTS_MAIN_DIR / args.output_name / "template.py"
     try:
-        run_external_command(["git", "--version"], capture_output=True)
-        _print_message("Git found.", level="success", indent=1)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        _print_message("git command not found. Please install git and ensure it's in your PATH.", level="error")
-        sys.exit(1)
-
-    # --- Step 1: Clone Repositories ---
-    _print_message("Step 1: Cloning/Verifying Repositories...", message_styles=["bold"])
-    _print_message(f"Ensuring cports repository exists at '{CPORTS_ROOT_DIR}'...", indent=1)
-    if CPORTS_ROOT_DIR.is_dir():
-        _print_message(f"'{CPORTS_DIR_NAME}' directory already exists. Attempting to update...", indent=2)
-        try:
-            run_external_command(["git", "pull"], cwd=CPORTS_ROOT_DIR)
-            _print_message("cports repository updated.", level="success", indent=2)
-        except subprocess.CalledProcessError:
-            _print_message("Failed to update cports repository. Using existing state.", level="warning", indent=2)
-    else:
-        run_external_command(["git", "clone", CPORTS_REPO_URL, str(CPORTS_ROOT_DIR)])
-        _print_message(f"Cloned cports successfully.", level="success", indent=2)
-
-    _print_message(f"Ensuring linux-surface repository exists at '{LINUX_SURFACE_ROOT_DIR}'...", indent=1)
-    if LINUX_SURFACE_ROOT_DIR.is_dir():
-        _print_message(f"'{LINUX_SURFACE_DIR_NAME}' directory already exists. Attempting to update...", indent=2)
-        try:
-            run_external_command(["git", "pull"], cwd=LINUX_SURFACE_ROOT_DIR)
-            _print_message("linux-surface repository updated.", level="success", indent=2)
-        except subprocess.CalledProcessError:
-            _print_message("Failed to update linux-surface repository. Using existing state.", level="warning", indent=2)
-    else:
-        run_external_command(["git", "clone", LINUX_SURFACE_REPO_URL, str(LINUX_SURFACE_ROOT_DIR)])
-        _print_message(f"Cloned linux-surface successfully.", level="success", indent=2)
-
-    # --- Step 2: cports Initial Setup ---
-    _print_message("Step 2: cports Initial Setup...", message_styles=["bold"])
-    cbuild_exe = CPORTS_ROOT_DIR / "cbuild"
-    if not cbuild_exe.is_file():
-        _print_message(f"'cbuild' executable not found at '{cbuild_exe}'. Corrupted cports clone?", level="error")
-        sys.exit(1)
-
-    _print_message("Ensuring cports signing key is configured...", indent=1)
-    config_ini_file = CPORTS_ROOT_DIR / "etc" / "config.ini"
-    key_configured = False
-    if config_ini_file.is_file():
-        config = configparser.ConfigParser(interpolation=None, default_section="cbuild")
-        config.read(config_ini_file)
-        if (config.has_option("cbuild", "signkey") and config.get("cbuild", "signkey")) or \
-           (config.has_section("signing") and config.has_option("signing", "key") and config.get("signing", "key")):
-            key_configured = True
-            _print_message("Signing key seems to be already configured in etc/config.ini.", indent=2)
-    
-    if not key_configured:
-        _print_message("Signing key not configured. Running './cbuild keygen'...", indent=2)
-        run_external_command([str(cbuild_exe), "keygen"], cwd=CPORTS_ROOT_DIR)
-        _print_message("Signing key generation/configuration attempted.", level="success", indent=2)
-    
-    _print_message("Ensuring cbuild build root ('bldroot') is set up...", indent=1)
-    bldroot_usr_dir = CPORTS_ROOT_DIR / "bldroot" / "usr"
-    if bldroot_usr_dir.is_dir(): # Check for a common subdir to confirm bldroot is populated
-        _print_message("'bldroot' already exists and seems populated.", indent=2)
-    else:
-        _print_message("Setting up 'bldroot' by running './cbuild bootstrap'...", indent=2)
-        run_external_command([str(cbuild_exe), "bootstrap"], cwd=CPORTS_ROOT_DIR)
-        _print_message("'bldroot' setup complete.", level="success", indent=2)
-
-    # --- Step 3: Prepare Custom Kernel Template ---
-    _print_message("Step 3: Preparing Custom Kernel Template...", message_styles=["bold"])
-    initial_template_rel_path = pathlib.Path("main") / ORIGINAL_KERNEL_TEMPLATE_NAME_IN_CPORTS
-    interim_template_rel_path = pathlib.Path("main") / INTERIM_TEMPLATE_DIR_BASENAME
-    
-    initial_template_abs_path = CPORTS_ROOT_DIR / initial_template_rel_path
-    interim_template_abs_path = CPORTS_ROOT_DIR / interim_template_rel_path
-
-    # --- Automated Kernel Version Compatibility Check ---
-    _print_message("Checking base kernel version compatibility with patch series...", indent=1)
-    base_template_py_path = initial_template_abs_path / "template.py"
-    base_pkgver = get_pkgver_from_template(base_template_py_path)
-    if not base_pkgver:
-        _print_message(f"Could not determine pkgver from base template '{base_template_py_path}'. Cannot verify patch compatibility.", level="error")
+        target_template_py_path.write_text(template_content)
+        _print_message(f"Successfully wrote template.py to: {target_template_py_path}", level="success", indent=1)
+    except IOError as e:
+        _print_message(f"Error writing template.py: {e}", level="error")
         sys.exit(1)
     
-    base_major_minor = ".".join(base_pkgver.split(".")[:2])
-    _print_message(f"Base template '{ORIGINAL_KERNEL_TEMPLATE_NAME_IN_CPORTS}' pkgver: {base_pkgver} (Major.Minor: {base_major_minor})", indent=2)
-    _print_message(f"Selected Linux Surface patch series: {LINUX_SURFACE_PATCH_SERIES_DIR}", indent=2)
-
-    if base_major_minor != LINUX_SURFACE_PATCH_SERIES_DIR:
-        _print_message(
-            f"CRITICAL WARNING: Base kernel version ({base_major_minor}) does NOT match the selected "
-            f"Surface patch series ({LINUX_SURFACE_PATCH_SERIES_DIR}). This will likely lead to build failures.",
-            level="error"
-        )
-        _print_message("Please update LINUX_SURFACE_PATCH_SERIES_DIR in this script to match the base kernel's major.minor version.", level="error")
-        _print_message(f"Alternatively, choose a different ORIGINAL_KERNEL_TEMPLATE_NAME_IN_CPORTS if you need a specific patch series.", level="error")
-        sys.exit(1)
-    else:
-        _print_message("Base kernel version matches selected patch series. Proceeding.", level="success", indent=2)
-
-
-    _print_message(f"Copying '{initial_template_rel_path}' to '{interim_template_rel_path}'...", indent=1)
-    final_template_rel_path_for_check = pathlib.Path("main") / FINAL_KERNEL_TEMPLATE_BASENAME
-    final_template_abs_path_for_check = CPORTS_ROOT_DIR / final_template_rel_path_for_check
-    if interim_template_abs_path.exists():
-        _print_message(f"Removing existing directory '{interim_template_abs_path}' for a fresh copy...", indent=2)
-        shutil.rmtree(interim_template_abs_path)
-    if final_template_abs_path_for_check.exists():
-        _print_message(f"Removing existing final directory '{final_template_abs_path_for_check}' to avoid conflicts...", indent=2)
-        shutil.rmtree(final_template_abs_path_for_check)
-
-    if not initial_template_abs_path.is_dir():
-        _print_message(f"Original kernel template '{initial_template_abs_path}' not found in cports!", level="error")
-        sys.exit(1)
-    shutil.copytree(initial_template_abs_path, interim_template_abs_path)
-    _print_message(f"Copied template to '{interim_template_abs_path}'.", level="success", indent=2)
-
-    patches_dir_full_path = interim_template_abs_path / "patches"
-    config_file_full_path = interim_template_abs_path / "files" / "config-x86_64.generic"
-    template_py_full_path = interim_template_abs_path / "template.py"
-
-    _print_message(f"Populating and cleaning patches directory '{patches_dir_full_path}'...", indent=1)
-    surface_patches_source_dir = LINUX_SURFACE_ROOT_DIR / "patches" / LINUX_SURFACE_PATCH_SERIES_DIR
-    if not surface_patches_source_dir.is_dir():
-        _print_message(f"Linux Surface patches for series '{LINUX_SURFACE_PATCH_SERIES_DIR}' not found at '{surface_patches_source_dir}'!", level="error")
-        sys.exit(1)
-
-    patches_dir_full_path.mkdir(parents=True, exist_ok=True)
-    _print_message(f"Cleaning out any pre-existing patches from '{patches_dir_full_path}'...", indent=2)
-    for old_patch in patches_dir_full_path.glob("*.patch"):
-        old_patch.unlink()
-    
-    _print_message(f"Copying Surface {LINUX_SURFACE_PATCH_SERIES_DIR} patches from '{surface_patches_source_dir}'...", indent=2)
-    for patch_file in surface_patches_source_dir.glob("*.patch"):
-        shutil.copy2(patch_file, patches_dir_full_path)
-
-    excluded_camera_patch_path = patches_dir_full_path / EXCLUDE_PATCH_CAMERA
-    if excluded_camera_patch_path.is_file():
-        _print_message(f"Removing excluded camera patch: '{EXCLUDE_PATCH_CAMERA}'", indent=2)
-        excluded_camera_patch_path.unlink()
-    else:
-        _print_message(f"Note: Camera patch '{EXCLUDE_PATCH_CAMERA}' was not found in the copied set (this is okay).", indent=2)
-
-    excluded_amd_patch_path = patches_dir_full_path / EXCLUDE_PATCH_AMD_GPIO
-    if excluded_amd_patch_path.is_file():
-        _print_message(f"Removing excluded AMD GPIO patch: '{EXCLUDE_PATCH_AMD_GPIO}'", indent=2)
-        excluded_amd_patch_path.unlink()
-    else:
-        _print_message(f"Note: AMD GPIO patch '{EXCLUDE_PATCH_AMD_GPIO}' was not found in the copied set (this is okay).", indent=2)
-    
-    _print_message(f"Patch directory populated. Contents of '{patches_dir_full_path}':", indent=2)
-    for item in sorted(patches_dir_full_path.iterdir()): print(f"    {item.name}") # Sorted for consistent output
-    
-    actual_patch_count = len(list(patches_dir_full_path.glob("*.patch")))
-    _print_message(f"Found {actual_patch_count} patch files. Expected around {EXPECTED_PATCH_COUNT_AFTER_EXCLUSIONS}.", indent=2)
-    if not (EXPECTED_PATCH_COUNT_AFTER_EXCLUSIONS - 2 <= actual_patch_count <= EXPECTED_PATCH_COUNT_AFTER_EXCLUSIONS + 2):
-        _print_message(f"Patch count ({actual_patch_count}) seems unusual. Please verify.", level="warning", indent=3)
-
-
-    _print_message(f"Editing kernel config '{config_file_full_path}'...", indent=1)
-    if not config_file_full_path.is_file():
-        _print_message(f"Kernel config file '{config_file_full_path}' not found!", level="error")
-        sys.exit(1)
-    
-    config_content = config_file_full_path.read_text().splitlines()
-    new_config_content: List[str] = []
-    atomisp_found_in_config = False
-    atomisp_modified = False
-    for line in config_content:
-        stripped_line = line.strip()
-        if stripped_line.startswith("CONFIG_INTEL_ATOMISP="):
-            if stripped_line != "CONFIG_INTEL_ATOMISP=n": # Only change if not already 'n'
-                new_config_content.append(f"# {stripped_line} (Original value, commented by script)")
-                new_config_content.append("CONFIG_INTEL_ATOMISP=n")
-                atomisp_modified = True
-            else:
-                new_config_content.append(line) # Already n, keep as is
-            atomisp_found_in_config = True
-        elif stripped_line == "# CONFIG_INTEL_ATOMISP is not set":
-            new_config_content.append(line) 
-            atomisp_found_in_config = True # Considered handled
-        else:
-            new_config_content.append(line)
-            
-    if not atomisp_found_in_config:
-         _print_message("CONFIG_INTEL_ATOMISP was not found in the config file. Adding 'CONFIG_INTEL_ATOMISP=n'.", level="info", indent=2)
-         new_config_content.append("CONFIG_INTEL_ATOMISP=n") # Add it if not found at all
-         atomisp_modified = True
-    elif not atomisp_modified and atomisp_found_in_config:
-         _print_message("CONFIG_INTEL_ATOMISP already correctly set or commented out.", indent=2)
-
-    if atomisp_modified or not atomisp_found_in_config :
-        config_file_full_path.write_text("\n".join(new_config_content) + "\n")
-        _print_message(f"Updated CONFIG_INTEL_ATOMISP in '{config_file_full_path}'.", indent=2)
-    
-    _print_message("Verifying CONFIG_INTEL_ATOMISP setting (should be 'n' or commented):", indent=3)
-    run_external_command(["grep", "-E", "^(# )?CONFIG_INTEL_ATOMISP", str(config_file_full_path)], check=False, capture_output=True)
-
-
-    _print_message(f"Editing template.py '{template_py_full_path}'...", indent=1)
-    if not template_py_full_path.is_file():
-        _print_message(f"Template file '{template_py_full_path}' not found!", level="error")
-        sys.exit(1)
-    
-    template_content = template_py_full_path.read_text()
-    template_content = re.sub(
-        rf'pkgname\s*=\s*"{ORIGINAL_KERNEL_TEMPLATE_NAME_IN_CPORTS}"',
-        f'pkgname = "{FINAL_KERNEL_TEMPLATE_BASENAME}"',
-        template_content
-    )
-    template_content = re.sub(
-        r'pkgdesc\s*=\s*.*', 
-        f'pkgdesc = "Linux kernel (LTS {LINUX_SURFACE_PATCH_SERIES_DIR} series) with Surface patches for SP7"',
-        template_content
-    )
-    template_content = re.sub(
-        rf'@subpackage\(\s*"{ORIGINAL_KERNEL_TEMPLATE_NAME_IN_CPORTS}-devel"\s*\)',
-        f'@subpackage("{FINAL_KERNEL_TEMPLATE_BASENAME}-devel")',
-        template_content
-    )
-    template_content = re.sub(
-        rf'@subpackage\(\s*"{ORIGINAL_KERNEL_TEMPLATE_NAME_IN_CPORTS}-dbg",\s*self.build_dbg\s*\)',
-        f'@subpackage("{FINAL_KERNEL_TEMPLATE_BASENAME}-dbg", self.build_dbg)',
-        template_content
-    )
-    template_py_full_path.write_text(template_content)
-    _print_message("Modified pkgname, pkgdesc, and subpackage names.", indent=2)
-
-    # --- Step 4: Rename the Template Directory ---
-    _print_message("Step 4: Renaming template directory...", message_styles=["bold"])
-    final_template_abs_path = CPORTS_ROOT_DIR / "main" / FINAL_KERNEL_TEMPLATE_BASENAME
-    
-    if str(interim_template_abs_path.name) != FINAL_KERNEL_TEMPLATE_BASENAME:
-        if interim_template_abs_path.is_dir():
-            interim_template_abs_path.rename(final_template_abs_path)
-            _print_message(f"Renamed '{interim_template_abs_path}' to '{final_template_abs_path}'.", level="success", indent=1)
-        elif final_template_abs_path.is_dir():
-            _print_message(f"Directory '{interim_template_abs_path.name}' not found, but '{final_template_abs_path.name}' already exists. Assuming already renamed.", indent=1)
-        else:
-            _print_message(f"Source directory '{interim_template_abs_path.name}' not found for renaming!", level="error")
-            sys.exit(1)
-    else:
-        _print_message(f"Template directory name is already '{FINAL_KERNEL_TEMPLATE_BASENAME}'. No rename needed.", indent=1)
-
-    # --- Step 5: Relink Subpackages ---
-    _print_message("Step 5: Relinking subpackages...", message_styles=["bold"])
-    final_template_rel_for_cbuild = f"main/{FINAL_KERNEL_TEMPLATE_BASENAME}"
-    if final_template_abs_path.is_dir():
-        run_external_command([str(cbuild_exe), "relink-subpkgs", final_template_rel_for_cbuild], cwd=CPORTS_ROOT_DIR)
-        _print_message(f"Subpackage relinking attempted for '{final_template_rel_for_cbuild}'.", level="success", indent=1)
-    else:
-        _print_message(f"Final template directory '{final_template_abs_path}' not found. Skipping relink-subpkgs.", level="warning", indent=1)
-
     print("-" * 60)
-    _print_message("--- All preparation steps complete! ---", level="star", message_styles=["bold"])
-    _print_message(f"The template is now located at: '{final_template_abs_path}'", indent=1)
-    _print_message(f"You should now be able to build from '{CPORTS_ROOT_DIR}' with:", indent=1)
-    _print_message(f"  {_color_text(str(cbuild_exe) + ' pkg ' + final_template_rel_for_cbuild, color_name='green', style_names=['bold'])}", indent=2)
+    _print_message("--- Generation Complete! ---", level="star", message_styles=["bold"])
+    _print_message(f"New cport template for '{args.output_name}' created at:", indent=1)
+    _print_message(f"  {CPORTS_MAIN_DIR / args.output_name}", indent=2, message_styles=["cyan"])
+    _print_message("To build the kernel, navigate to your cports directory and run:", indent=1)
+    _print_message(f"  ./cbuild pkg main/{args.output_name}", indent=2, message_styles=["green", "bold"])
     print("-" * 60)
 
 if __name__ == "__main__":
     try:
         main()
-    except subprocess.CalledProcessError:
-        _print_message("A command failed to execute. See output above.", level="error")
-        sys.exit(1)
     except Exception as e:
         _print_message(f"An unexpected script error occurred: {e}", level="error")
         import traceback
@@ -407,4 +597,3 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         print(COLORS.get("reset", "\033[0m"))
-

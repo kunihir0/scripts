@@ -1,0 +1,267 @@
+# Maintainer: Maximilian Luz <m@mxnluz.io>
+# Maintainer: Blaž Hrastnik <blaz@mxxn.io>
+# Maintainer: Jan Alexander Steffens (heftig) <jan.steffens@gmail.com>
+
+pkgbase=linux-surface
+pkgver=6.14.2.arch1
+pkgrel=1
+pkgdesc='Linux'
+_shortver=${pkgver%.*}
+_fullver=${pkgver%.*}-${pkgver##*.}
+_srctag=v${_fullver}
+url="https://github.com/archlinux/linux/commits/$_srctag"
+arch=(x86_64)
+license=(GPL2)
+makedepends=(
+  bc
+  cpio
+  gettext
+  git
+  libelf
+  perl
+  tar
+  xz
+  python
+  # we don't need `pahole` as deps because we disable `CONFIG_DEBUG_INFO`
+  # ignoring deps for docs because we don't build docs package
+)
+optdepends=('iptsd: Touchscreen support'
+            'linux-firmware: Firmware files for Linux'
+            'linux-firmware-marvell: Firmware files for Marvell WiFi / Bluetooth')
+options=('!strip')
+_srcname=archlinux-linux
+source=(
+  "$_srcname::git+https://github.com/archlinux/linux#tag=$_srctag"
+  config         # the main kernel config file
+
+  surface.config # surface specific options
+  arch.config # config changes for linux-surface kernel
+  0001-secureboot.patch
+  0002-surface3.patch
+  0003-mwifiex.patch
+  0004-ath10k.patch
+  0005-ipts.patch
+  0006-ithc.patch
+  0007-surface-sam.patch
+  0008-surface-sam-over-hid.patch
+  0009-surface-button.patch
+  0010-surface-typecover.patch
+  0011-surface-shutdown.patch
+  0012-surface-gpe.patch
+  0013-cameras.patch
+  0014-amd-gpio.patch
+  0015-rtc.patch
+)
+validpgpkeys=(
+  'ABAF11C65A2970B130ABE3C479BE3E4300411886'  # Linus Torvalds
+  '647F28654894E3BD457199BE38DBBDC86092693E'  # Greg Kroah-Hartman
+  'A2FF3A36AAA56654109064AB19802F8B0D70FC30'  # Jan Alexander Steffens (heftig)
+)
+sha256sums=('8fb801ac0004d22dbfc498266b156f13148272737ae42514169e7a56d72fd673'
+            'a6a234cd982d21f0d7daa3ba921293e450abd87ff5d7474d4a153b3f34cfabc5'
+            '8a68dbf5e7875f0d6a99c6aeb1dc913cc320fcb4e29c7fe388dc2ed7d81ac76b'
+            '008e37de7e6cf8b9479ef0f0f425a25092646e85d741aedd056e5ff3e1096361'
+            '77020395ec2fa3dcc609b9c984fec7f97fae196f0a24436031abbd4988b86300'
+            'd73b19dc2b070272ffeffcbae862691ed03fb215e8f232b954fe9f6ed509e80c'
+            '718fd1b9cfbb0818235f78e440890f989dd969f784ff0e4aee52c36a078ca126'
+            'cda4ef1533326aace8562d2a5fe4300f2fc3773ec11f7c2550ca4876e1139018'
+            'a05467f5825e279e189b2ca926efe698077769b70428e8f61689d8e0f70c6c39'
+            '2d141c2dec6190d5bd51ecb82e79bdcbc0babe64b3299088d45a6a267acbb424'
+            '814be3c48392cdcf6b5df4575cb87e91839cc2b89750a3646c99357ab565cf1a'
+            '18f602335a757f81235c749650f403029fccc590317c61fd3d8842678e49b16d'
+            '7f42df95c3efb058f716776e21391a423083792063ed7693c3293f6556f74935'
+            '72be9823fd1bad0a039bb2e4b55997030f8e98b5144ed3c5c6f85d6995426cf9'
+            'cae8e878df9c8590defe5e3bc01ce54ed0b98db9df1077fd9e5af175f308bbc5'
+            'f19165e6c43a37d670f47f43505786ba0f788b06003918c2d0443c287cfb281a'
+            '21d9064e2d3be7b70bee5347d8dc748068ed1ad18f8f357a0e88fd73e16dbd77'
+            '92f88078a04a37706a1ed8ca04004c4318ddecb746804a2abd73f2342a37200e'
+            'c3af5556d9d872f7d2316728e67a7a9cb77041b687e517a906f03e14a4e58e54')
+
+
+export KBUILD_BUILD_HOST=archlinux
+export KBUILD_BUILD_USER=$pkgbase
+export KBUILD_BUILD_TIMESTAMP="$(date -Ru${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH})"
+
+# optional certificate and key for secure boot signing
+_mok_crt="$PWD/MOK.crt"
+_mok_key="$PWD/MOK.key"
+
+_make() {
+  test -s version
+  make KERNELRELEASE="$(<version)" "$@"
+}
+
+prepare() {
+  cd $_srcname
+
+  echo "Setting version..."
+  echo "-$pkgrel" > localversion.10-pkgrel
+  echo "${pkgbase#linux}" > localversion.20-pkgname
+  make defconfig
+  make -s kernelrelease > version
+  make mrproper
+
+  # setup git
+  git config --local user.email "surfacebot@users.noreply.github.com"
+  git config --local user.name "surfacebot"
+
+  local src
+  for src in "${source[@]}"; do
+    src="${src%%::*}"
+    src="${src##*/}"
+    [[ $src = *.patch ]] || continue
+    echo "Applying patch $src..."
+    git am -3 "../$src"
+  done
+
+  echo "Setting config..."
+  # cp ../config .config
+  # merge the two configs together
+  ./scripts/kconfig/merge_config.sh -m ./config ./surface.config ./arch.config
+  _make olddefconfig
+
+  echo "Prepared $pkgbase version $(<version)"
+}
+
+build() {
+  cd $_srcname
+  _make all
+}
+
+_package() {
+  pkgdesc="The $pkgdesc kernel and modules"
+  depends=(
+    coreutils
+    initramfs
+    kmod
+  )
+  optdepends=(
+    'wireless-regdb: to set the correct wireless channels of your country'
+    'linux-firmware: firmware images needed for some devices'
+  )
+  provides=(
+    linux=${_shortver}
+    KSMBD-MODULE
+    VIRTUALBOX-GUEST-MODULES
+    WIREGUARD-MODULE
+  )
+  replaces=(
+    virtualbox-guest-modules-arch
+    wireguard-arch
+  )
+
+  cd $_srcname
+  local modulesdir="$pkgdir/usr/lib/modules/$(<version)"
+  local image_name="$(_make -s image_name)"
+
+  # sign boot image if the prequisites are available
+  if [[ -f "$_mok_crt" ]] && [[ -f "$_mok_key" ]] && [[ -x "$(command -v sbsign)" ]]; then
+    echo "Signing boot image..."
+    sbsign --key "$_mok_key" --cert "$_mok_crt" --output "$image_name" "$image_name"
+  fi
+
+  echo "Installing boot image..."
+  # systemd expects to find the kernel here to allow hibernation
+  # https://github.com/systemd/systemd/commit/edda44605f06a41fb86b7ab8128dcf99161d2344
+  install -Dm644 "$image_name" "$modulesdir/vmlinuz"
+
+  # Used by mkinitcpio to name the kernel
+  echo "$pkgbase" | install -Dm644 /dev/stdin "$modulesdir/pkgbase"
+
+  echo "Installing modules..."
+  _make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 \
+    DEPMOD=/doesnt/exist modules_install  # Suppress depmod
+
+  # remove build and source links
+  rm "$modulesdir"/build
+}
+
+_package-headers() {
+  pkgdesc="Headers and scripts for building modules for the $pkgdesc kernel"
+  depends=(pahole)
+  provides=("linux-headers=${_shortver}")
+
+  cd $_srcname
+  local builddir="$pkgdir/usr/lib/modules/$(<version)/build"
+
+  echo "Installing build files..."
+  install -Dt "$builddir" -m644 .config Makefile Module.symvers System.map \
+    localversion.* version vmlinux
+  install -Dt "$builddir/kernel" -m644 kernel/Makefile
+  install -Dt "$builddir/arch/x86" -m644 arch/x86/Makefile
+  cp -t "$builddir" -a scripts
+
+  # required when STACK_VALIDATION is enabled
+  install -Dt "$builddir/tools/objtool" tools/objtool/objtool
+
+  echo "Installing headers..."
+  cp -t "$builddir" -a include
+  cp -t "$builddir/arch/x86" -a arch/x86/include
+  install -Dt "$builddir/arch/x86/kernel" -m644 arch/x86/kernel/asm-offsets.s
+
+  install -Dt "$builddir/drivers/md" -m644 drivers/md/*.h
+  install -Dt "$builddir/net/mac80211" -m644 net/mac80211/*.h
+
+  # http://bugs.archlinux.org/task/13146
+  install -Dt "$builddir/drivers/media/i2c" -m644 drivers/media/i2c/msp3400-driver.h
+
+  # http://bugs.archlinux.org/task/20402
+  install -Dt "$builddir/drivers/media/usb/dvb-usb" -m644 drivers/media/usb/dvb-usb/*.h
+  install -Dt "$builddir/drivers/media/dvb-frontends" -m644 drivers/media/dvb-frontends/*.h
+  install -Dt "$builddir/drivers/media/tuners" -m644 drivers/media/tuners/*.h
+
+  # https://bugs.archlinux.org/task/71392
+  install -Dt "$builddir/drivers/iio/common/hid-sensors" -m644 drivers/iio/common/hid-sensors/*.h
+
+  echo "Installing KConfig files..."
+  find . -name 'Kconfig*' -exec install -Dm644 {} "$builddir/{}" \;
+
+  echo "Removing unneeded architectures..."
+  local arch
+  for arch in "$builddir"/arch/*/; do
+    [[ $arch = */x86/ ]] && continue
+    echo "Removing $(basename "$arch")"
+    rm -r "$arch"
+  done
+
+  echo "Removing documentation..."
+  rm -r "$builddir/Documentation"
+
+  echo "Removing broken symlinks..."
+  find -L "$builddir" -type l -printf 'Removing %P\n' -delete
+
+  echo "Removing loose objects..."
+  find "$builddir" -type f -name '*.o' -printf 'Removing %P\n' -delete
+
+  echo "Stripping build tools..."
+  local file
+  while read -rd '' file; do
+    case "$(file -bi "$file")" in
+      application/x-sharedlib\;*)      # Libraries (.so)
+        strip -v $STRIP_SHARED "$file" ;;
+      application/x-archive\;*)        # Libraries (.a)
+        strip -v $STRIP_STATIC "$file" ;;
+      application/x-executable\;*)     # Binaries
+        strip -v $STRIP_BINARIES "$file" ;;
+      application/x-pie-executable\;*) # Relocatable binaries
+        strip -v $STRIP_SHARED "$file" ;;
+    esac
+  done < <(find "$builddir" -type f -perm -u+x ! -name vmlinux -print0)
+
+  echo "Stripping vmlinux..."
+  strip -v $STRIP_STATIC "$builddir/vmlinux"
+
+  echo "Adding symlink..."
+  mkdir -p "$pkgdir/usr/src"
+  ln -sr "$builddir" "$pkgdir/usr/src/$pkgbase"
+}
+
+pkgname=("$pkgbase" "$pkgbase-headers")
+for _p in "${pkgname[@]}"; do
+  eval "package_$_p() {
+    $(declare -f "_package${_p#$pkgbase}")
+    _package${_p#$pkgbase}
+  }"
+done
+
+# vim:set ts=8 sts=2 sw=2 et:

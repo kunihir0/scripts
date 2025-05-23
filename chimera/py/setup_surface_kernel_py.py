@@ -312,8 +312,7 @@ def generate_template_py_content(
 ) -> str:
     pkgver = pkgbuild_data["pkgver"]
     pkgrel = pkgbuild_data["pkgrel"]
-    # _srctag is already in pkgbuild_data, e.g., "v6.14.2-arch1"
-    _srctag_for_git = pkgbuild_data["_srctag"]
+    _srctag_value = pkgbuild_data["_srctag"] # e.g., v6.14.2-arch1
     
     # Ensure makedepends are quoted if they contain special characters, though unlikely for package names
     hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in pkgbuild_data.get("makedepends", [])])
@@ -336,13 +335,14 @@ archs = ["x86_64"]  # Assuming x86_64 as per typical Surface devices
 license = "GPL-2.0-only"
 url = "https://github.com/linux-surface/linux-surface"
 
-# _srctag will be substituted by the generator with the actual value.
-# Local files (config, patches) are not listed in source; they are accessed via self.chroot_files_path etc.
-_srctag_for_git = "{_srctag_for_git}"
+# Use a tarball archive of the specific git tag.
+# _srctag_value will be substituted by the generator.
+_srctag_for_archive = "{_srctag_value}"
 source = [
-    f"https://github.com/archlinux/linux.git#tag={{_srctag_for_git}}"
+    f"https://github.com/archlinux/linux/archive/refs/tags/{{_srctag_for_archive}}.tar.gz>{{pkgname}}-{{pkgver}}-source.tar.gz"
 ]
-sha256 = ["SKIP"] # For git sources, SKIP is typical. cbuild verifies commit if possible.
+# User will need to update this checksum after the first fetch.
+sha256 = ["PLEASE_UPDATE_CHECKSUM_AND_REPLACE_THIS_STRING_WITH_THE_ACTUAL_SHA256"]
 
 hostmakedepends = [
     {hostmakedepends_list_str},
@@ -583,7 +583,7 @@ def main() -> None:
     except IOError as e:
         _print_message(f"Error writing template.py: {e}", level="error")
         sys.exit(1)
-
+    
     _print_message("Step 5: Creating subpackage symlinks...", message_styles=["bold"])
     devel_subpackage_name = f"{args.output_name}-devel"
     symlink_path = CPORTS_MAIN_DIR / devel_subpackage_name
@@ -624,7 +624,11 @@ def main() -> None:
     _print_message("--- Generation Complete! ---", level="star", message_styles=["bold"])
     _print_message(f"New cport template for '{args.output_name}' created at:", indent=1)
     _print_message(f"  {CPORTS_MAIN_DIR / args.output_name}", indent=2, message_styles=["cyan"])
-    _print_message("To build the kernel, navigate to your cports directory and run:", indent=1)
+    _print_message("IMPORTANT: You need to update the 'sha256' in the generated template.py:", level="warning", indent=1)
+    _print_message(f"  1. Run: ./cbuild fetch main/{args.output_name}", indent=2)
+    _print_message(f"  2. cbuild will error and print the correct SHA256 checksum.", indent=2)
+    _print_message(f"  3. Edit '{target_template_py_path}' and replace the placeholder with the correct checksum.", indent=2)
+    _print_message("After updating the checksum, you can build the kernel with:", indent=1)
     _print_message(f"  ./cbuild pkg main/{args.output_name}", indent=2, message_styles=["green", "bold"])
     print("-" * 60)
 

@@ -490,7 +490,7 @@ def install(self):
         self.ln_s(f"../lib/modules/{{kernelrelease}}/build", self.destdir / f"usr/src/{{self.pkgname}}", relative=True)
 
 @subpackage(f"{{pkgname}}-devel")
-def _devel(self):
+def _(self):
     self.pkgdesc = f"{{pkgdesc}} (development files)"
     self.depends += ["clang", "pahole"] # Common devel deps
     self.options = ["foreignelf", "execstack", "!scanshlibs"] # Common options

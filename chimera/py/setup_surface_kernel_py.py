@@ -153,7 +153,15 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
 
     pkgver_match = re.search(r"^\s*pkgver=([^\s#]+)", content, re.MULTILINE)
     if pkgver_match:
-        data["pkgver"] = pkgver_match.group(1).strip().strip("'\"")
+        original_pkgver_str = pkgver_match.group(1).strip().strip("'\"")
+        data["original_pkgver"] = original_pkgver_str # Keep for _srctag logic
+        # Sanitize pkgver for template.py (apk format: X.Y.Z)
+        sanitized_pkgver_match = re.match(r"(\d+\.\d+(\.\d+)?)", original_pkgver_str)
+        if sanitized_pkgver_match:
+            data["pkgver"] = sanitized_pkgver_match.group(1)
+        else:
+            _print_message(f"Could not sanitize 'pkgver': {original_pkgver_str}", level="error")
+            sys.exit(1)
     else:
         _print_message("Could not parse 'pkgver' from PKGBUILD.", level="error")
         sys.exit(1)
@@ -169,9 +177,10 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
     # _shortver=${pkgver%.*}
     # _fullver=${pkgver%.*}-${pkgver##*.}
     # _srctag=v${_fullver}
-    pkgver = data["pkgver"]
-    shortver = ".".join(pkgver.split(".")[:-1]) if '.' in pkgver else pkgver # Handles cases like "6.14.2" and "6.14.2.arch1"
-    suffix = pkgver.split(".")[-1] if '.' in pkgver else ""
+    # Use original_pkgver for _srctag calculation logic as it matches PKGBUILD's intent
+    pkgver_for_srctag = data["original_pkgver"]
+    shortver = ".".join(pkgver_for_srctag.split(".")[:-1]) if '.' in pkgver_for_srctag else pkgver_for_srctag
+    suffix = pkgver_for_srctag.split(".")[-1] if '.' in pkgver_for_srctag else ""
     
     # Reconstruct _fullver carefully
     if pkgver.count('.') >= 2: # e.g. 6.14.2 or 6.14.2.arch1
@@ -183,7 +192,7 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
         else:
             fullver = base_version
     else: # Less common format, try to adapt
-        fullver = pkgver
+        fullver = pkgver_for_srctag
 
     # The PKGBUILD _fullver is ${pkgver%.*}-${pkgver##*.}
     # For "6.14.2.arch1": pkgver%.* is "6.14.2", pkgver##*. is "arch1" -> "6.14.2-arch1"
@@ -192,11 +201,11 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
     # The PKGBUILD's _srctag is v${_fullver}
     # Let's try to replicate the PKGBUILD's _fullver logic for _srctag
     
-    pkgver_parts = pkgver.split('.')
-    if len(pkgver_parts) > 1 and not pkgver_parts[-1].isdigit(): # like .arch1
-        _fullver_pkb = f"{'.'.join(pkgver_parts[:-1])}-{pkgver_parts[-1]}"
+    pkgver_parts_for_srctag = pkgver_for_srctag.split('.')
+    if len(pkgver_parts_for_srctag) > 1 and not pkgver_parts_for_srctag[-1].isdigit(): # like .arch1
+        _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}"
     else: # like .2
-         _fullver_pkb = f"{'.'.join(pkgver_parts[:-1])}-{pkgver_parts[-1]}" if len(pkgver_parts) > 1 else pkgver
+         _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}" if len(pkgver_parts_for_srctag) > 1 else pkgver_for_srctag
 
 
     # The _srctag in the PKGBUILD is `v${_fullver}` where _fullver is derived.

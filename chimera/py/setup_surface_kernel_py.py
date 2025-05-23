@@ -312,7 +312,8 @@ def generate_template_py_content(
 ) -> str:
     pkgver = pkgbuild_data["pkgver"]
     pkgrel = pkgbuild_data["pkgrel"]
-    _srctag = pkgbuild_data["_srctag"]
+    # _srctag is already in pkgbuild_data, e.g., "v6.14.2-arch1"
+    _srctag_for_git = pkgbuild_data["_srctag"]
     
     # Ensure makedepends are quoted if they contain special characters, though unlikely for package names
     hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in pkgbuild_data.get("makedepends", [])])
@@ -335,19 +336,13 @@ archs = ["x86_64"]  # Assuming x86_64 as per typical Surface devices
 license = "GPL-2.0-only"
 url = "https://github.com/linux-surface/linux-surface"
 
-_srctag = "{_srctag}"
+# _srctag will be substituted by the generator with the actual value.
+# Local files (config, patches) are not listed in source; they are accessed via self.chroot_files_path etc.
+_srctag_for_git = "{_srctag_for_git}"
 source = [
-    f"git+https://github.com/archlinux/linux#tag={{_srctag}}",
-    "files/config",
-    "files/surface.config",
-    "files/arch.config",
+    f"https://github.com/archlinux/linux.git#tag={{_srctag_for_git}}"
 ]
-sha256 = [  # Corrected variable name
-    "SKIP",  # For git source
-    "{file_checksums['config']}",
-    "{file_checksums['surface.config']}",
-    "{file_checksums['arch.config']}",
-]
+sha256 = ["SKIP"] # For git sources, SKIP is typical. cbuild verifies commit if possible.
 
 hostmakedepends = [
     {hostmakedepends_list_str},
@@ -405,9 +400,9 @@ def prepare(self):
         self.log("Merging kernel configurations...")
         self.do(
             self.chroot_cwd / "scripts/kconfig/merge_config.sh", "-m",
-            self.chroot_sources_path / "config",
-            self.chroot_sources_path / "surface.config",
-            self.chroot_sources_path / "arch.config",
+            self.chroot_files_path / "config",        # Use self.chroot_files_path
+            self.chroot_files_path / "surface.config",  # Use self.chroot_files_path
+            self.chroot_files_path / "arch.config",     # Use self.chroot_files_path
             wrksrc=self.chroot_cwd
         )
 

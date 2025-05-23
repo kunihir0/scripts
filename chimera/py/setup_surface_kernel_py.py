@@ -182,17 +182,10 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
     shortver = ".".join(pkgver_for_srctag.split(".")[:-1]) if '.' in pkgver_for_srctag else pkgver_for_srctag
     suffix = pkgver_for_srctag.split(".")[-1] if '.' in pkgver_for_srctag else ""
     
-    # Reconstruct _fullver carefully
-    if pkgver.count('.') >= 2: # e.g. 6.14.2 or 6.14.2.arch1
-        base_version_parts = pkgver.split('.')[:3] # Major.Minor.Patch
-        base_version = ".".join(base_version_parts)
-        arch_suffix_parts = pkgver.split('.')[3:] # Anything after Major.Minor.Patch
-        if arch_suffix_parts:
-            fullver = f"{base_version}.{'.'.join(arch_suffix_parts)}" # Arch PKGBUILD uses . for arch suffix
-        else:
-            fullver = base_version
-    else: # Less common format, try to adapt
-        fullver = pkgver_for_srctag
+    # The _fullver_pkb calculation below (lines 218-222 in previous version) correctly derives
+    # the necessary string component from pkgver_for_srctag for _srctag.
+    # The block that was here defining 'fullver' was redundant and the source of the NameError.
+    # Removing the problematic 'fullver' calculation block.
 
     # The PKGBUILD _fullver is ${pkgver%.*}-${pkgver##*.}
     # For "6.14.2.arch1": pkgver%.* is "6.14.2", pkgver##*. is "arch1" -> "6.14.2-arch1"

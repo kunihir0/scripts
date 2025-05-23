@@ -342,7 +342,7 @@ source = [
     "files/surface.config",
     "files/arch.config",
 ]
-sha256sums = [
+sha256 = [  # Corrected variable name
     "SKIP",  # For git source
     "{file_checksums['config']}",
     "{file_checksums['surface.config']}",
@@ -361,7 +361,7 @@ options = [
     "textrels", "execstack", "foreignelf"
 ]
 
-make_ENV = {{
+make_env = {{  # Corrected variable name
     "KBUILD_BUILD_HOST": "chimera-linux",
     "KBUILD_BUILD_USER": pkgname,
     # KBUILD_BUILD_TIMESTAMP is typically handled by the kernel's Makefile

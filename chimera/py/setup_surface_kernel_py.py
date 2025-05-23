@@ -321,6 +321,8 @@ def generate_template_py_content(
     for dep in pkgb_makedepends:
         if dep == "bc":
             chimera_hostmakedepends.append("bc-gh")
+        elif dep == "cpio":
+            chimera_hostmakedepends.append("libarchive")
         else:
             chimera_hostmakedepends.append(dep)
     

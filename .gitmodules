@@ -1,0 +1,6 @@
+[submodule "chimera/cports"]
+	path = chimera/cports
+	url = https://github.com/chimera-linux/cports
+[submodule "chimera/linux-surface"]
+	path = chimera/linux-surface
+	url = https://github.com/linux-surface/linux-surface

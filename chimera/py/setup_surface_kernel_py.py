@@ -97,7 +97,12 @@ def run_external_command(
         raise
 
 # --- Script Configuration ---
-WORKSPACE_ROOT = pathlib.Path.cwd() # Assuming script is run from project root
+# SCRIPT_DIR is the directory containing this script (e.g., .../scripts/chimera/py)
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+# PROJECT_ROOT_FROM_SCRIPT should be the 'scripts' directory level
+PROJECT_ROOT_FROM_SCRIPT = SCRIPT_DIR.parent.parent # Up from py, up from chimera
+
+WORKSPACE_ROOT = PROJECT_ROOT_FROM_SCRIPT # This is the intended root for relative paths like "chimera/cports"
 CPORTS_MAIN_DIR = WORKSPACE_ROOT / "chimera" / "cports" / "main"
 LINUX_SURFACE_REPO_PATH = WORKSPACE_ROOT / "chimera" / "linux-surface"
 DEFAULT_OUTPUT_CPORT_NAME = "linux-surface-generated"

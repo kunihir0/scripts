@@ -444,7 +444,7 @@ source = [
     # 1. Base kernel from kernel.org
     f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz",
     # 2. Incremental patch from kernel.org (for the specific pkgver)
-    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz",
+    f"!https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz",
     # 3. Surface patches/configs archive from linux-surface GitHub
     f"https://github.com/linux-surface/linux-surface/archive/refs/tags/{surface_archive_tag}.tar.gz>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
 ]
@@ -453,7 +453,7 @@ sha256 = [
     "{sha256_kernel_patch}", # For patch-{pkgver}.xz
     "{sha256_surface_archive}"  # For {{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz
 ]
-noextract = [f"patch-{{pkgver}}.xz"] # Changed from skip_extraction
+# The patch is applied manually in prepare(), so no need for noextract/skip_extraction
 
 hostmakedepends = [
     {hostmakedepends_list_str},
@@ -500,6 +500,18 @@ def prepare(self):
         self.do("make", *_make_vars, "mrproper")
 
         self.log("Applying patches...")
+        # Apply main kernel patch
+        patch_path = self.sources_path / f"patch-{pkgver}.xz"
+        if patch_path.is_file():
+            self.do(
+                "xzcat", self.chroot_sources_path / f"patch-{pkgver}.xz",
+                stdout_to_file="main_kernel.patch"
+            )
+            self.do("patch", "-Np1", "-i", self.chroot_cwd / "main_kernel.patch")
+            self.rm(self.chroot_cwd / "main_kernel.patch")
+        else:
+            self.log_warn(f"Main kernel patch patch-{pkgver}.xz not found in sources.")
+
         if not (self.chroot_cwd / ".git").is_dir():
             self.do("git", "init")
             self.do("git", "config", "--local", "user.email", "cbuild@chimera-linux.org")
@@ -507,45 +519,64 @@ def prepare(self):
             self.do("git", "add", ".")
             self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit before patching")
 
-        surface_patches_dir = self.cwd / "surface_patches"
-        if surface_patches_dir.is_dir():
-            patch_file_host_paths = sorted(list(surface_patches_dir.glob("*.patch")))
-            if not patch_file_host_paths:
-                self.log_warn(f"No .patch files found in {{surface_patches_dir}}")
-            for host_patch_file in patch_file_host_paths:
-                self.log(f"Applying patch {{host_patch_file.name}}...")
-                self.do(
-                    "git", "am", "-3",
-                    f"/tmp/{{host_patch_file.name}}",
-                    tmpfiles=[host_patch_file]
-                )
+        surface_patches_dir = self.cwd / "surface_patches" # This path needs to be correct based on where surface sources extract
+        # Assuming surface sources ({{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz) extract to a dir like 'linux-surface-refs-tags-...'
+        # and patches are in a subdirectory like 'patches/{kernel_major_minor}'
+        # This part needs to be robust to the actual extracted directory name of the surface archive.
+        # For now, let's assume a fixed relative path or that the user places them correctly.
+        # A more robust solution would be to find the extracted surface source directory.
+        
+        # Example: if surface sources extract to 'linux-surface-{surface_archive_tag}'
+        # and patches are in 'linux-surface-{surface_archive_tag}/patches/{kernel_major_minor}'
+        # This needs to be determined by inspecting the surface archive structure.
+        # For now, we'll assume a placeholder or that the user sets up `surface_patches_dir` correctly.
+        
+        # Placeholder for finding the correct surface patch directory:
+        # actual_surface_patch_src_dir = self.chroot_srcdir / "linux-surface-..." / "patches" / kernel_major_minor
+        # For now, using a fixed relative path as an example, this will likely need adjustment
+        actual_surface_patch_src_dir = self.chroot_srcdir / ".." / f"linux-surface-refs-tags-{surface_archive_tag}" / "patches" / kernel_major_minor
+
+        if actual_surface_patch_src_dir.is_dir():
+            self.log(f"Applying Surface patches from {{actual_surface_patch_src_dir}}")
+            for patch_file in sorted(actual_surface_patch_src_dir.glob("*.patch")):
+                self.log(f"Applying Surface patch {{patch_file.name}}...")
+                self.do("patch", "-Np1", "-i", patch_file)
         else:
-            self.log_warn(f"Surface patches directory not found: {{surface_patches_dir}}")
+            self.log_warn(f"Surface patches directory not found at expected location: {{actual_surface_patch_src_dir}}")
+            self.log_warn(f"Ensure the third source URL extracts to a directory containing 'patches/{kernel_major_minor}'.")
+
 
         self.log("Merging kernel configurations...")
-        host_config_file = self.files_path / "config"
-        host_surface_config_file = self.files_path / "surface.config"
-        host_arch_config_file = self.files_path / "arch.config"
+        host_config_file = self.files_path / "config.x86_64" # Assuming x86_64 for now
+        # Surface config should come from the extracted surface sources
+        # e.g., actual_surface_patch_src_dir.parent / "configs" / f"surface-{kernel_major_minor}.config"
+        # This needs to be robust.
+        host_surface_config_file = actual_surface_patch_src_dir.parent / "configs" / f"surface-{kernel_major_minor}.config"
+
+
+        if not host_config_file.is_file():
+            self.error(f"Base config file not found: {{host_config_file}}")
+        if not host_surface_config_file.is_file():
+            self.error(f"Surface config file not found: {{host_surface_config_file}}")
 
         chroot_config_path = f"/tmp/{{host_config_file.name}}"
         chroot_surface_config_path = f"/tmp/{{host_surface_config_file.name}}"
-        chroot_arch_config_path = f"/tmp/{{host_arch_config_file.name}}"
         
         self.do("cp", chroot_config_path, ".config.base", 
                 tmpfiles=[host_config_file])
         self.do("cp", chroot_surface_config_path, ".config.surface", 
                 tmpfiles=[host_surface_config_file])
-        self.do("cp", chroot_arch_config_path, ".config.arch", 
-                tmpfiles=[host_arch_config_file])
         
         try:
             self.do("./scripts/kconfig/merge_config.sh", "-m", 
-                    ".config.base", ".config.surface", ".config.arch")
+                    ".config.base", ".config.surface")
+            self.mv(".config", ".config.merged_tmp") # Save merged result
+            self.do("cp", ".config.merged_tmp", ".config") # Ensure .config is the final merged one
+            self.rm(".config.merged_tmp")
         except Exception as e:
             self.log_warn(f"merge_config.sh failed, trying manual merge: {{e}}")
             self.do("cp", ".config.base", ".config")
             self.do("sh", "-c", "cat .config.surface >> .config")
-            self.do("sh", "-c", "cat .config.arch >> .config")
 
         self.log("Running make olddefconfig...")
         self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "olddefconfig") 
@@ -578,7 +609,7 @@ def install(self):
         self.do(
             "make",
             f"INSTALL_MOD_PATH={{self.chroot_destdir / 'usr'}}",
-            "DEPMOD=/doesnt/exist",
+            "DEPMOD=/doesnt/exist", # cbuild handles depmod
             "modules_install"
         )
 
@@ -767,7 +798,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        _print_message(f"An unexpected script error occurred: {e}", level="error")
+        _print_message(f"An unexpected error occurred: {e}", level="error") # Generic error message
         import traceback
         traceback.print_exc()
         sys.exit(1)

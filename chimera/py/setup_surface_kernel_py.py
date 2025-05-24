@@ -577,13 +577,13 @@ def prepare(self):
         self.log(f"--- Setting CONFIG_LOCALVERSION ---")
         self.do("scripts/config", "--enable", "CONFIG_LOCALVERSION_AUTO", env=self.make_env)
         self.log(f"Enabled CONFIG_LOCALVERSION_AUTO.")
-        localversion_str_var = f"-{output_cport_name.replace('linux-', '')}" # Distinct var name
-        self.log(f"Setting CONFIG_LOCALVERSION to {{localversion_str_var}}")
-        self.do("scripts/config", "--set-str", "CONFIG_LOCALVERSION", localversion_str_var, env=self.make_env)
+        # Use the pre-defined value from the generator's scope
+        self.log(f"Setting CONFIG_LOCALVERSION to {localversion_config_val!r}")
+        self.do("scripts/config", "--set-str", "CONFIG_LOCALVERSION", "{localversion_config_val}", env=self.make_env)
         
-        pkgrel_suffix_str_var = f"-r{{self.pkgrel}}" # Distinct var name
-        self.log(f"Writing '{{pkgrel_suffix_str_var}}' to localversion.10-pkgrel")
-        self.do("sh", "-c", f"echo '{pkgrel_suffix_str_var}' > localversion.10-pkgrel")
+        # Use the pre-defined value from the generator's scope
+        self.log(f"Writing '{pkgrel_file_content_val}' to localversion.10-pkgrel")
+        self.do("sh", "-c", f"echo '{pkgrel_file_content_val}' > localversion.10-pkgrel")
         self.log(f"--- Finished setting CONFIG_LOCALVERSION ---")
 
         self.log(f"--- Finalizing .config ---")

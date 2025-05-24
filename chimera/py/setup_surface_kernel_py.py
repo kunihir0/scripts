@@ -416,26 +416,60 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
         surface_config_source_path = found_configs[0]
         _print_message(f"Using surface config: {surface_config_source_path.name}", level="info", indent=3)
 
-    copy_and_sanitize_config(surface_config_source_path, files_dir / "surface.config")
+    # Surface-specific config (e.g., surface-X.Y.config) will be sourced from the downloaded
+    # linux-surface archive by the template.py's prepare/configure steps.
+    # Thus, the following block that copies from a local surface_configs_dir is removed.
+    # pkgver = pkgbuild_data["pkgver"]
+    # kernel_major_minor = ".".join(pkgver.split(".")[:2])
+    # surface_config_name = f"surface-{kernel_major_minor}.config"
+    # if surface_configs_dir: # Check if the optional path was provided
+    #     surface_config_source_path = surface_configs_dir / surface_config_name
+    #     if not surface_config_source_path.is_file():
+    #         found_configs = list(surface_configs_dir.glob(f"surface-{kernel_major_minor}*.config"))
+    #         if not found_configs:
+    #              _print_message(f"Warning: Surface config '{surface_config_name}' (or similar for {kernel_major_minor}) not found in {surface_configs_dir}. Template will rely on archive.", level="warning", indent=3)
+    #         else:
+    #             surface_config_source_path = found_configs[0]
+    #             _print_message(f"Using surface config from local path: {surface_config_source_path.name}", level="info", indent=3)
+    #             copy_and_sanitize_config(surface_config_source_path, files_dir / "surface.config") # This would be for a local override
+    #     else:
+    #         copy_and_sanitize_config(surface_config_source_path, files_dir / "surface.config")
 
-    # Copy patch files to surface_patches/ instead of patches/
-    _print_message("Copying patch files...", indent=2)
-    kernel_series_for_patches = kernel_major_minor
-    source_patches_dir = linux_surface_repo_base_path / "patches" / kernel_series_for_patches
-    
-    if not source_patches_dir.is_dir():
-        _print_message(f"Error: Patches directory not found for series {kernel_series_for_patches} at {source_patches_dir}", level="error")
-        sys.exit(1)
 
-    for patch_filename in pkgbuild_data["patch_filenames"]:
-        source_patch_path = source_patches_dir / patch_filename
-        if source_patch_path.is_file():
-            shutil.copy2(source_patch_path, surface_patches_dir / patch_filename)
-            _print_message(f"Copied patch: {patch_filename}", indent=3)
-        else:
-            _print_message(f"Warning: Patch file '{patch_filename}' not found in {source_patches_dir}", level="warning", indent=3)
+    # Patches:
+    # - Critical/musl patches should be added to 'patches/' dir for auto-application.
+    # - Surface series patches will be handled by template.py from the downloaded archive.
+    # The old logic of copying from LINUX_SURFACE_REPO_PATH to a custom 'surface_patches' dir is removed.
+    _print_message("Setting up 'patches/' directory for auto-apply patches...", indent=2)
+    # The old logic for copying patches from linux_surface_repo_base_path / "patches" / kernel_series_for_patches
+    # to a custom "surface_patches" directory is removed.
+    # The generated template.py will handle applying patches from the downloaded surface archive.
+    # Only essential, non-series patches (like musl fixes) go into the cport's 'patches/' dir.
 
-    # Calculate checksums for files in files/
+    # Example: Add fix-musl-objtool.patch (content needs to be defined or sourced)
+    # This should ideally be a file copied from a known good source, or its content embedded.
+    # For now, let's create a placeholder in patches/
+    musl_patch_content = """--- a/tools/objtool/Makefile
++++ b/tools/objtool/Makefile
+@@ -30,7 +30,7 @@
+ INCLUDES := -I$(srctree)/tools/include \\
+      -I$(srctree)/tools/objtool/include \\
+      -I$(srctree)/tools/objtool/arch/$(SRCARCH)/include
+-CFLAGS   := -Werror $(WARNINGS) $(KBUILD_HOSTCFLAGS) -g $(INCLUDES) $(LIBELF_FLAGS)
++CFLAGS   := -Werror $(WARNINGS) $(KBUILD_HOSTCFLAGS) -g $(INCLUDES) $(LIBELF_FLAGS) -D__always_inline=inline
+ LDFLAGS  += $(LIBELF_LIBS) $(LIBSUBCMD) $(KBUILD_HOSTLDFLAGS)
+"""
+    # Ensure patches_dir is defined (it was defined earlier in this function in a previous diff)
+    patches_dir = target_cport_path / "patches" # Re-ensure it's defined in this scope
+    if not patches_dir.exists(): # Should have been created earlier
+        patches_dir.mkdir()
+
+    musl_patch_path = patches_dir / "0001-fix-musl-objtool.patch"
+    musl_patch_path.write_text(musl_patch_content)
+    _print_message(f"Created placeholder musl fix patch: {musl_patch_path}", indent=3)
+
+
+    # Calculate checksums for files in files/ and patches/
     file_checksums = { # For files managed by the generator script itself
         "mv-debug.sh": calculate_sha256(mv_debug_script_path),
         "0001-fix-musl-objtool.patch": calculate_sha256(musl_patch_path),

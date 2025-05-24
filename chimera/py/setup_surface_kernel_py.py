@@ -383,8 +383,25 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
         # Preserve original file permissions
         shutil.copymode(src_path, dest_path)
 
-    copy_and_sanitize_config(kernel_stuff_dir / "config", files_dir / "config")
-    copy_and_sanitize_config(kernel_stuff_dir / "arch.config", files_dir / "arch.config")
+    # Copy base config files if kernel_stuff_dir is provided
+    if kernel_stuff_dir and (kernel_stuff_dir / "config").is_file():
+        copy_and_sanitize_config(kernel_stuff_dir / "config", files_dir / "config.x86_64") # Assuming x86_64 for now
+        _print_message(f"Copied base config from {kernel_stuff_dir / 'config'} to files/config.x86_64", indent=3)
+    elif kernel_stuff_dir: # It was provided but 'config' file is missing
+        _print_message(f"Base 'config' not found in {kernel_stuff_dir}. Template will need a placeholder or manual addition.", level="warning", indent=3)
+    else: # kernel_stuff_dir was None
+        _print_message("kernel_stuff_path not provided. Base 'config' will not be copied. Template will need a placeholder or manual addition.", level="info", indent=3)
+        
+    # arch.config is not directly used by the new template logic, which prefers merge_config.sh
+    # if kernel_stuff_dir and (kernel_stuff_dir / "arch.config").is_file():
+    #     copy_and_sanitize_config(kernel_stuff_dir / "arch.config", files_dir / "arch.config")
+
+    # Surface-specific config (e.g., surface-X.Y.config) will be sourced from the downloaded
+    # linux-surface archive by the template.py's prepare/configure steps.
+    # So, no need to copy it from surface_configs_dir here.
+    if surface_configs_dir: # This argument is now optional
+        _print_message(f"Note: --surface-configs-path ('{surface_configs_dir}') was provided, but surface configs are now intended to be sourced from the downloaded archive by the template.py.", level="info", indent=3)
+
 
     pkgver = pkgbuild_data["pkgver"]
     kernel_major_minor = ".".join(pkgver.split(".")[:2])

@@ -398,9 +398,17 @@ options = [
     "textrels", "execstack", "foreignelf"
 ]
 
-make_env = {{  # Corrected variable name
+make_env = {{
     "KBUILD_BUILD_HOST": "chimera-linux",
     "KBUILD_BUILD_USER": pkgname,
+    # Ensure kernel build uses clang for host tools
+    "HOSTCC": "clang",
+    "CC": "clang", # Also set CC for good measure, kernel Makefiles can be complex
+    "LD": "ld.lld",
+    "AR": "llvm-ar",
+    "NM": "llvm-nm",
+    "OBJCOPY": "llvm-objcopy",
+    "OBJDUMP": "llvm-objdump",
     # KBUILD_BUILD_TIMESTAMP is typically handled by the kernel's Makefile
     # using SOURCE_DATE_EPOCH set by cbuild.
 }}

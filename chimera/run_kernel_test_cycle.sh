@@ -5,23 +5,24 @@
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-# Get the directory where this script is located to ensure relative paths work
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-cd "$SCRIPT_DIR" || exit 1
+# Get the directory where this script is located (chimera/)
+# and cd to the project root (one level up)
+SCRIPT_PARENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." &> /dev/null && pwd)"
+cd "$SCRIPT_PARENT_DIR" || exit 1
 
-echo "--- Starting Kernel Test Cycle ---"
+echo "--- Starting Kernel Test Cycle (from $PWD) ---"
 
 echo ""
 echo "STEP 1: Pulling latest changes from git..."
 git pull
 
 echo ""
-echo "STEP 2: Running setup_surface_kernel_py.py generator..."
-python chimera/py/setup_surface_kernel_py.py --force
+echo "STEP 2: Running setup_surface_kernel_py.py generator (chimera/py/setup_surface_kernel_py.py)..."
+python chimera/py/setup_surface_kernel_py.py --force # Path relative to project root
 
 echo ""
 echo "STEP 3: Changing to cports directory (chimera/cports/)..."
-cd chimera/cports
+cd chimera/cports # Path relative to project root
 
 echo ""
 echo "STEP 4: Running cbuild prepare-upgrade to update checksums..."
@@ -45,5 +46,5 @@ echo ""
 echo "--- Kernel Test Cycle Complete ---"
 echo "Check the output above for any build errors from cbuild."
 
-# Return to the original script directory (project root)
-cd "$SCRIPT_DIR"
+# Return to the project root directory
+cd "$SCRIPT_PARENT_DIR"

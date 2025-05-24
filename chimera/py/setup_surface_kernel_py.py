@@ -273,10 +273,29 @@ def setup_cport_directory(
     files_dir.mkdir()
     patches_dir.mkdir()
 
-    # Copy config files
-    _print_message("Copying configuration files...", indent=2)
-    shutil.copy2(kernel_stuff_dir / "config", files_dir / "config")
-    shutil.copy2(kernel_stuff_dir / "arch.config", files_dir / "arch.config")
+    # Copy config files, ensuring Unix line endings
+    _print_message("Copying configuration files (ensuring Unix LF)...", indent=2)
+    
+    def copy_with_unix_endings(src_path: pathlib.Path, dest_path: pathlib.Path):
+        try:
+            # Try reading as UTF-8 first, which is most common
+            content = src_path.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            # Fallback for kernel config files which might sometimes have non-UTF-8 chars
+            # or be in a system's default single-byte encoding like latin-1.
+            _print_message(f"Warning: UTF-8 decode failed for {src_path.name}, trying latin-1. Review file if issues persist.", level="warning", indent=3)
+            content = src_path.read_text(encoding='latin-1')
+        
+        # Normalize line endings to LF
+        content_lf = content.replace("\r\n", "\n").replace("\r", "\n")
+        
+        # Write back, preferably as UTF-8. If original was truly not UTF-8 and contained
+        # incompatible chars, this might alter them, but kconfig files are usually ASCII-compatible.
+        dest_path.write_text(content_lf, encoding='utf-8')
+        shutil.copymode(src_path, dest_path) # Preserve original file permissions
+
+    copy_with_unix_endings(kernel_stuff_dir / "config", files_dir / "config")
+    copy_with_unix_endings(kernel_stuff_dir / "arch.config", files_dir / "arch.config")
 
     pkgver = pkgbuild_data["pkgver"]
     kernel_major_minor = ".".join(pkgver.split(".")[:2]) # e.g., "6.14"
@@ -292,7 +311,7 @@ def setup_cport_directory(
         surface_config_source_path = found_configs[0] # Take the first one found
         _print_message(f"Using surface config: {surface_config_source_path.name}", level="info", indent=3)
 
-    shutil.copy2(surface_config_source_path, files_dir / "surface.config")
+    copy_with_unix_endings(surface_config_source_path, files_dir / "surface.config")
 
     # Copy patch files
     _print_message("Copying patch files...", indent=2)

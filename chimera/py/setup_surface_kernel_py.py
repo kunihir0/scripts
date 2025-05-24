@@ -436,16 +436,12 @@ make_env = {
 }"""
     processed_make_env_block = textwrap.dedent(make_env_block_raw).strip()
 
-    # Prepare the 'prepare' function string with necessary values formatted in
-    # These values (pkgver, surface_archive_tag, kernel_major_minor, output_cport_name)
-    # are from the generator's scope and will be baked into the prepare_function_str.
-    # They are NOT accessed via `self` inside the generated prepare function string itself,
-    # but rather `self.pkgver`, `self.surface_archive_tag`, `self.kernel_major_minor`
-    # will be used if those attributes are set on the template object by cbuild.
-    # To be safe, we use the generator's variables directly in the f-string for prepare.
     prepare_function_str = f"""
 def prepare(self):
-    # Apply main kernel patch (inside build_wrksrc, e.g., linux-{kernel_major_minor})
+    # Values like pkgver, surface_archive_tag, kernel_major_minor, output_cport_name
+    # are baked into this function string by the generator.
+    # Standard template attributes like self.pkgver, self.pkgrel are accessed via self.
+
     with self.pushd(self.build_wrksrc):
         self.log("Applying main kernel patch...")
         patch_filename = f"patch-{pkgver}.xz" 
@@ -470,9 +466,9 @@ def prepare(self):
             self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit after main kernel patch")
         
         self.log("Applying Surface patches...")
-        surface_extracted_dir_name = f"linux-surface-{surface_archive_tag}" # Uses generator's surface_archive_tag
+        surface_extracted_dir_name = f"linux-surface-{surface_archive_tag}"
         surface_archive_root_chroot = self.chroot_cwd / ".." / surface_extracted_dir_name 
-        surface_patches_subdir_chroot = surface_archive_root_chroot / "patches" / "{kernel_major_minor}" # Uses generator's kernel_major_minor
+        surface_patches_subdir_chroot = surface_archive_root_chroot / "patches" / "{kernel_major_minor}"
         
         if surface_patches_subdir_chroot.is_dir():
             patch_files_chroot = sorted(list(surface_patches_subdir_chroot.glob("*.patch")))
@@ -483,12 +479,12 @@ def prepare(self):
                 self.do("patch", "-Np1", "-i", patch_file_chroot)
         else:
             self.log_warn(f"Surface patches directory not found: {{surface_patches_subdir_chroot}}")
-            self.log_warn(f"Searched in '{{surface_extracted_dir_name}}/patches/{kernel_major_minor}' relative to '{{self.chroot_srcdir}}'.") # Use generator's vars for clarity
+            self.log_warn(f"Searched in '{{surface_extracted_dir_name}}/patches/{kernel_major_minor}' relative to '{{self.chroot_srcdir}}'.")
             self.log_warn(f"Ensure the surface archive (tag: {surface_archive_tag}) extracts to '{{surface_extracted_dir_name}}' alongside '{{self.build_wrksrc}}'.")
 
         self.log("Merging kernel configurations...")
         host_base_config_file = self.files_path / f"config.{{self.profile().arch}}"
-        surface_config_chroot_path = surface_archive_root_chroot / "configs" / f"surface-{kernel_major_minor}.config" # Use generator's kernel_major_minor
+        surface_config_chroot_path = surface_archive_root_chroot / "configs" / f"surface-{kernel_major_minor}.config"
 
         if not host_base_config_file.is_file():
             self.log_warn(f"Base config file '{{host_base_config_file.name}}' not found in template files directory. Attempting defconfig.")
@@ -524,12 +520,11 @@ def prepare(self):
         kernelrelease = (self.chroot_cwd / "version").read_text().strip()
         self.log(f"Final KERNELRELEASE for build: {{kernelrelease}}")
         
-        # Set self.localversion for subpackages, derived from the final kernelrelease
         if kernelrelease.startswith(self.pkgver):
             self.localversion = kernelrelease.replace(self.pkgver, "", 1)
         else:
-            self.log_warn(f"KERNELRELEASE '{{kernelrelease}}' ('{{self.pkgver}}' + '{{self.localversion}}') does not start with pkgver '{{self.pkgver}}'. Cannot set localversion accurately.")
-            self.localversion = "" # Fallback
+            self.log_warn(f"KERNELRELEASE '{{kernelrelease}}' ('{{self.pkgver}}' + '{{getattr(self, 'localversion', '')}}') does not start with pkgver '{{self.pkgver}}'. Cannot set localversion accurately.")
+            self.localversion = "" 
         self.log(f"Set self.localversion to: '{{self.localversion}}'")
 
         self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}")
@@ -541,20 +536,20 @@ def prepare(self):
 pkgname = "{output_cport_name}"
 pkgver = "{pkgver}" 
 pkgrel = {pkgrel} 
-# The following are standard cbuild attributes, will be set on the template object 'self'
-# surface_archive_tag = "{surface_archive_tag}" # No longer defining as global
-# kernel_major_minor = "{kernel_major_minor}" # No longer defining as global
+# Note: surface_archive_tag and kernel_major_minor are used internally by the prepare()
+# function by being formatted directly into its string definition from the generator's scope.
+# They are NOT defined as global template variables here to avoid cbuild lint errors.
 
-pkgdesc = f"Linux kernel ({kernel_major_minor} series) with Surface patches" # Uses generator's kernel_major_minor
+pkgdesc = f"Linux kernel ({kernel_major_minor} series) with Surface patches"
 archs = ["x86_64"]
 license = "GPL-2.0-only"
 url = "https://github.com/linux-surface/linux-surface"
-build_wrksrc = f"linux-{kernel_major_minor}" # Uses generator's kernel_major_minor
+build_wrksrc = f"linux-{kernel_major_minor}" 
 
 source = [
-    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz", # Uses generator's vars
-    f"!https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz", # Uses generator's vars
-    f"https://github.com/linux-surface/linux-surface/archive/refs/tags/{surface_archive_tag}.tar.gz>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz" # Uses generator's vars
+    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz",
+    f"!https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz",
+    f"https://github.com/linux-surface/linux-surface/archive/refs/tags/{surface_archive_tag}.tar.gz>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
 ]
 sha256 = [
     "{sha256_kernel_tar}", 
@@ -566,7 +561,7 @@ hostmakedepends = [
     {hostmakedepends_list_str},
 ]
 depends = ["base-kernel"]
-provides = [f"linux={{pkgver.split('.')[0]}}.{{pkgver.split('.')[1]}}"] # Uses self.pkgver
+provides = [f"linux={{pkgver.split('.')[0]}}.{{pkgver.split('.')[1]}}"]
 
 options = [
     "!check", "!debug", "!strip", "!scanrundeps", "!scanshlibs", "!lto",

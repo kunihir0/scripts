@@ -237,8 +237,8 @@ def sanitize_config_file(file_path: pathlib.Path) -> str:
 def setup_cport_directory(
     output_cport_name: str,
     force_overwrite: bool,
-    kernel_stuff_dir: Optional[pathlib.Path], # Made Optional
-    surface_configs_dir: Optional[pathlib.Path], # Made Optional
+    kernel_stuff_dir: Optional[pathlib.Path], 
+    surface_configs_dir: Optional[pathlib.Path], 
     pkgbuild_data: Dict[str, Any],
     linux_surface_repo_base_path: pathlib.Path 
 ) -> Dict[str, str]:
@@ -345,7 +345,7 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
 
     _print_message("Copying and sanitizing configuration files...", indent=2)
     
-    arch_for_config = pkgbuild_data.get('arch', 'x86_64') # Get arch, default to x86_64
+    arch_for_config = pkgbuild_data.get('arch', 'x86_64') 
     arch_specific_config_name = f"config.{arch_for_config}"
     target_config_path_in_files = files_dir / arch_specific_config_name
 
@@ -399,7 +399,6 @@ def generate_template_py_content(
     pkgver = pkgbuild_data["pkgver"] 
     pkgrel = pkgbuild_data["pkgrel"] 
     surface_archive_tag = pkgbuild_data["surface_archive_tag"] 
-    # kernel_major_minor is now also passed in pkgbuild_data
     kernel_major_minor = pkgbuild_data["kernel_major_minor"]
     kernel_major = kernel_major_minor.split('.')[0]
 
@@ -437,12 +436,17 @@ make_env = {
 }"""
     processed_make_env_block = textwrap.dedent(make_env_block_raw).strip()
 
+    # Prepare the 'prepare' function string with necessary values formatted in
     prepare_function_str = f"""
 def prepare(self):
+    # self.pkgver is like "6.8.1"
+    # self.surface_archive_tag is like "v6.8-1" (available via self.surface_archive_tag)
+    # self.kernel_major_minor is like "6.8" (available via self.kernel_major_minor)
+    
     # Apply main kernel patch (inside build_wrksrc, e.g., linux-{kernel_major_minor})
     with self.pushd(self.build_wrksrc):
         self.log("Applying main kernel patch...")
-        patch_filename = f"patch-{pkgver}.xz" 
+        patch_filename = f"patch-{{self.pkgver}}.xz" 
         kernel_patch_chroot_path = self.chroot_sources_path / patch_filename
         
         if not kernel_patch_chroot_path.is_file():
@@ -464,9 +468,9 @@ def prepare(self):
             self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit after main kernel patch")
         
         self.log("Applying Surface patches...")
-        surface_extracted_dir_name = f"linux-surface-{surface_archive_tag}"
+        surface_extracted_dir_name = f"linux-surface-{{self.surface_archive_tag}}"
         surface_archive_root_chroot = self.chroot_cwd / ".." / surface_extracted_dir_name 
-        surface_patches_subdir_chroot = surface_archive_root_chroot / "patches" / "{kernel_major_minor}"
+        surface_patches_subdir_chroot = surface_archive_root_chroot / "patches" / self.kernel_major_minor
         
         if surface_patches_subdir_chroot.is_dir():
             patch_files_chroot = sorted(list(surface_patches_subdir_chroot.glob("*.patch")))
@@ -477,12 +481,12 @@ def prepare(self):
                 self.do("patch", "-Np1", "-i", patch_file_chroot)
         else:
             self.log_warn(f"Surface patches directory not found: {{surface_patches_subdir_chroot}}")
-            self.log_warn(f"Searched in '{{surface_extracted_dir_name}}/patches/{kernel_major_minor}' relative to '{{self.chroot_srcdir}}'.")
-            self.log_warn(f"Ensure the surface archive (tag: {surface_archive_tag}) extracts to '{{surface_extracted_dir_name}}' alongside '{{self.build_wrksrc}}'.")
+            self.log_warn(f"Searched in '{{surface_extracted_dir_name}}/patches/{{self.kernel_major_minor}}' relative to '{{self.chroot_srcdir}}'.")
+            self.log_warn(f"Ensure the surface archive (tag: {{self.surface_archive_tag}}) extracts to '{{surface_extracted_dir_name}}' alongside '{{self.build_wrksrc}}'.")
 
         self.log("Merging kernel configurations...")
         host_base_config_file = self.files_path / f"config.{{self.profile().arch}}"
-        surface_config_chroot_path = surface_archive_root_chroot / "configs" / f"surface-{kernel_major_minor}.config"
+        surface_config_chroot_path = surface_archive_root_chroot / "configs" / f"surface-{{self.kernel_major_minor}}.config"
 
         if not host_base_config_file.is_file():
             self.log_warn(f"Base config file '{{host_base_config_file.name}}' not found in template files directory. Attempting defconfig.")
@@ -506,7 +510,8 @@ def prepare(self):
 
         self.log("Setting CONFIG_LOCALVERSION...")
         self.do("scripts/config", "--enable", "CONFIG_LOCALVERSION_AUTO", env=self.make_env)
-        self.do("scripts/config", "--set-str", "CONFIG_LOCALVERSION", f"-{output_cport_name.replace('linux-', '')}", env=self.make_env)
+        # Use self.pkgname which is the cport name (e.g., linux-surface-generated)
+        self.do("scripts/config", "--set-str", "CONFIG_LOCALVERSION", f"-{{self.pkgname.replace('linux-', '')}}", env=self.make_env)
         
         self.do("sh", "-c", f"echo '-r{{self.pkgrel}}' > localversion.10-pkgrel")
 
@@ -517,6 +522,12 @@ def prepare(self):
         self.do("make", "kernelrelease", "-s", stdout_to_file="version", env=self.make_env)
         kernelrelease = (self.chroot_cwd / "version").read_text().strip()
         self.log(f"Final KERNELRELEASE for build: {{kernelrelease}}")
+        # Set self.localversion for subpackages
+        if kernelrelease.startswith(self.pkgver):
+            self.localversion = kernelrelease.replace(self.pkgver, "", 1)
+        else:
+            self.log_warn(f"KERNELRELEASE '{{kernelrelease}}' does not start with pkgver '{{self.pkgver}}'. Cannot set localversion accurately.")
+            self.localversion = "" # Fallback
 
         self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}")
 """
@@ -525,32 +536,28 @@ def prepare(self):
 # Auto-generated by setup_surface_kernel_py.py
 
 pkgname = "{output_cport_name}"
-pkgver = "{pkgver}" # e.g., 6.8.1
-pkgrel = {pkgrel} # e.g., 0
-# These will be available in the template context via self.pkgname, self.pkgver etc.
-# surface_archive_tag and kernel_major_minor are directly formatted into prepare()
-# as they are not standard cbuild template attributes.
+pkgver = "{pkgver}" 
+pkgrel = {pkgrel} 
+# surface_archive_tag and kernel_major_minor are now attributes of the template object
+surface_archive_tag = "{surface_archive_tag}"
+kernel_major_minor = "{kernel_major_minor}"
 
-pkgdesc = f"Linux kernel ({kernel_major_minor} series) with Surface patches"
+pkgdesc = f"Linux kernel ({{kernel_major_minor}} series) with Surface patches"
 archs = ["x86_64"]
 license = "GPL-2.0-only"
 url = "https://github.com/linux-surface/linux-surface"
-build_wrksrc = f"linux-{kernel_major_minor}" # From kernel.org tarball
+build_wrksrc = f"linux-{{kernel_major_minor}}" 
 
 source = [
-    # 1. Base kernel from kernel.org
-    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz",
-    # 2. Incremental patch from kernel.org (for the specific pkgver) - Not extracted by cbuild
-    f"!https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz",
-    # 3. Surface patches/configs archive from linux-surface GitHub
-    f"https://github.com/linux-surface/linux-surface/archive/refs/tags/{surface_archive_tag}.tar.gz>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
+    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{{kernel_major_minor}}.tar.xz",
+    f"!https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{{pkgver}}.xz",
+    f"https://github.com/linux-surface/linux-surface/archive/refs/tags/{{surface_archive_tag}}.tar.gz>{{pkgname}}-{{surface_archive_tag}}-surface-sources.tar.gz"
 ]
 sha256 = [
-    "{sha256_kernel_tar}", # For linux-{kernel_major_minor}.tar.xz
-    "{sha256_kernel_patch}", # For patch-{pkgver}.xz
-    "{sha256_surface_archive}"  # For {{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz
+    "{sha256_kernel_tar}", 
+    "{sha256_kernel_patch}", 
+    "{sha256_surface_archive}"
 ]
-# Note: patch-{pkgver}.xz is applied manually in prepare()
 
 hostmakedepends = [
     {hostmakedepends_list_str},
@@ -562,15 +569,7 @@ options = [
     "!check", "!debug", "!strip", "!scanrundeps", "!scanshlibs", "!lto",
     "textrels", "execstack", "foreignelf"
 ]
-# Default make_env for kernel builds
-# KBUILD_BUILD_TIMESTAMP is often set by cbuild itself via self.source_date_epoch_bsd
-# but can be made explicit if needed.
 {processed_make_env_block}
-# Add KBUILD_BUILD_TIMESTAMP using self.source_date_epoch_bsd
-# This needs to be done carefully as self is not available at template string definition time.
-# It's better to set this in the hooks directly:
-# env_for_make = {{**self.make_env, "KBUILD_BUILD_TIMESTAMP": self.source_date_epoch_bsd}}
-# And then pass env=env_for_make to self.do("make", ..., env=env_for_make)
 {prepare_function_str}
 def build(self):
     _make_vars = [ 
@@ -580,7 +579,6 @@ def build(self):
     with self.pushd(self.build_wrksrc):
         kernelrelease = (self.chroot_cwd / "version").read_text().strip()
         self.log(f"Building kernel version {{kernelrelease}}") 
-        # Pass make_env to ensure LDFLAGS="", KBUILD_BUILD_USER etc. are set
         self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "all", env=self.make_env) 
 
 def install(self):
@@ -600,7 +598,7 @@ def install(self):
         self.do(
             "make",
             f"INSTALL_MOD_PATH={{self.chroot_destdir / 'usr'}}",
-            "DEPMOD=/doesnt/exist", # cbuild handles depmod
+            "DEPMOD=/doesnt/exist", 
             "modules_install",
             env=self.make_env
         )
@@ -626,7 +624,7 @@ def install(self):
             self.install_dir(builddir_target / "kernel")
             self.install_file(kernel_makefile_path, builddir_target / "kernel", mode=0o644)
         
-        arch_makefile_path = self.chroot_cwd / "arch" / self.profile().arch / "Makefile" # Use self.profile().arch
+        arch_makefile_path = self.chroot_cwd / "arch" / self.profile().arch / "Makefile" 
         if arch_makefile_path.exists():
             self.install_dir(builddir_target / "arch" / self.profile().arch)
             self.install_file(arch_makefile_path, builddir_target / "arch" / self.profile().arch, mode=0o644)
@@ -636,7 +634,7 @@ def install(self):
             if src_d.is_dir():
                 self.cp(src_d, builddir_target / d_name, recursive=True, symlinks=True)
         
-        arch_include_path = self.chroot_cwd / "arch" / self.profile().arch / "include" # Use self.profile().arch
+        arch_include_path = self.chroot_cwd / "arch" / self.profile().arch / "include" 
         if arch_include_path.is_dir():
              self.cp(arch_include_path, builddir_target / "arch" / self.profile().arch / "include", recursive=True, symlinks=True)
         
@@ -655,25 +653,15 @@ def install(self):
 @subpackage(f"{{pkgname}}-devel")
 def _(self):
     self.pkgdesc = f"{{pkgdesc}} (development files)"
-    self.depends += ["clang", "pahole"] # pahole is for dwarves
+    self.depends += ["clang", "pahole"] 
     self.options = ["foreignelf", "execstack", "!scanshlibs"]
     
-    # kernelrelease_real determination logic from base-kernel
-    # self.localversion is available on the parent package object (self.parent)
-    kernelrelease_real = self.parent.pkgver + getattr(self.parent, 'localversion', '')
+    parent_localversion = getattr(self.parent, 'localversion', '')
+    if not parent_localversion and self.parent.stage > 0: # Only warn if not in bootstrap stage 0 where localversion might not be set
+        self.log_warn(f"Parent package 'localversion' attribute not found or empty. "
+                      f"-devel paths might be incorrect if KERNELRELEASE differs from pkgver.")
     
-    # Check if the constructed path exists, otherwise try to find it
-    if not (self.parent.destdir / f"usr/lib/modules/{{kernelrelease_real}}").is_dir():
-        self.log_warn(f"Constructed kernelrelease path 'usr/lib/modules/{{kernelrelease_real}}' not found.")
-        if hasattr(self.parent, 'rparent') and hasattr(self.parent.rparent, 'destdir') and (self.parent.rparent.destdir / "usr/lib/modules").exists():
-            module_paths = list((self.parent.rparent.destdir / "usr/lib/modules").glob("*"))
-            if module_paths:
-                kernelrelease_real = module_paths[0].name # Fallback if direct construction failed
-                self.log_warn(f"Using found kernelrelease: {{kernelrelease_real}}")
-            else:
-                 self.log_warn(f"Could not reliably determine kernelrelease for -devel paths. Using constructed: {{kernelrelease_real}}")
-        else:
-            self.log_warn(f"Could not find modules directory to determine kernelrelease for -devel paths. Using constructed: {{kernelrelease_real}}")
+    kernelrelease_real = self.parent.pkgver + parent_localversion
 
     return [
         f"usr/lib/modules/{{kernelrelease_real}}/build",
@@ -684,7 +672,6 @@ def _(self):
 def _(self):
     self.pkgdesc = f"{{pkgdesc}} (debug files)"
     self.options = ["!scanrundeps", "!strip", "!scanshlibs"]
-    # dbg package contents are auto-handled by cbuild if debug option is on for parent
     return []
 """
     return template_str
@@ -693,9 +680,11 @@ def main() -> None:
     _print_message("--- Linux Surface Cports Template Generator ---", message_styles=["bold", "purple"])
     args = parse_arguments()
 
-    # Calculate kernel_major_minor here for use in main()
     pkgver_main_for_calc = args.kernel_version
     kernel_major_minor_parts_for_calc = pkgver_main_for_calc.split('.')
+    if len(kernel_major_minor_parts_for_calc) < 2:
+        _print_message(f"Error: kernel_version '{pkgver_main_for_calc}' is not in a valid format (e.g., X.Y.Z)", level="error")
+        sys.exit(1)
     kernel_major_minor_for_main = f"{kernel_major_minor_parts_for_calc[0]}.{kernel_major_minor_parts_for_calc[1]}"
 
 
@@ -703,7 +692,7 @@ def main() -> None:
         "pkgver": args.kernel_version,
         "pkgrel": "0", 
         "surface_archive_tag": args.surface_archive_tag,
-        "kernel_major_minor": kernel_major_minor_for_main, # Add for use in generate_template_py_content
+        "kernel_major_minor": kernel_major_minor_for_main, 
         "makedepends": [], 
         "patch_filenames": [],
         "arch": "x86_64" 
@@ -804,9 +793,9 @@ def main() -> None:
     _print_message(f"  {CPORTS_MAIN_DIR / args.output_name}", indent=2, message_styles=["cyan"])
     _print_message("IMPORTANT: You need to update the 'sha256' list in the generated template.py:", level="warning", indent=1)
     _print_message(f"  The 'sha256' list has three placeholder entries corresponding to the three URLs in the 'source' list:", indent=2)
-    _print_message(f"    1. Kernel.org base tarball (e.g., linux-{kernel_major_minor_for_main}.tar.xz)", indent=3) # Use calculated var
-    _print_message(f"    2. Kernel.org incremental patch (e.g., patch-{args.kernel_version}.xz)", indent=3) # Use args
-    _print_message(f"    3. Linux-surface archive (e.g., {args.output_name}-{args.surface_archive_tag}-surface-sources.tar.gz)", indent=3) # Use args
+    _print_message(f"    1. Kernel.org base tarball (e.g., linux-{kernel_major_minor_for_main}.tar.xz)", indent=3) 
+    _print_message(f"    2. Kernel.org incremental patch (e.g., patch-{args.kernel_version}.xz)", indent=3) 
+    _print_message(f"    3. Linux-surface archive (e.g., {args.output_name}-{args.surface_archive_tag}-surface-sources.tar.gz)", indent=3) 
     _print_message(f"  To get the checksums:", indent=2)
     _print_message(f"    a. Run: ./cbuild fetch main/{args.output_name}", indent=3)
     _print_message(f"    b. cbuild will download the files and print their SHA256 checksums (it might error if placeholders are still in use).", indent=3)

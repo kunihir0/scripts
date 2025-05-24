@@ -349,22 +349,18 @@ def generate_template_py_content(
     _srctag_value = pkgbuild_data["_srctag"] # e.g., v6.14.2-arch1
     
     # Ensure makedepends are quoted if they contain special characters, though unlikely for package names
-    # Map 'bc' from PKGBUILD to 'bc-gh' for Chimera
+    # Rely primarily on base-kernel-devel, then add specific extras from PKGBUILD if not covered.
+    # base-kernel-devel should provide most of what's needed (toolchain, core utils, perl, python, elfutils, etc.)
+    chimera_hostmakedepends = ["base-kernel-devel"]
+    
+    # Add specific tools from PKGBUILD that might not be in base-kernel-devel or are good to be explicit about.
     pkgb_makedepends = pkgbuild_data.get("makedepends", [])
-    chimera_hostmakedepends = []
-    for dep in pkgb_makedepends:
-        if dep == "bc":
-            chimera_hostmakedepends.append("bc-gh")
-        elif dep == "cpio":
-            chimera_hostmakedepends.append("libarchive")
-        elif dep == "libelf":
-            chimera_hostmakedepends.append("elfutils-devel") # libelf is provided by elfutils
-        elif dep == "tar":
-            # libarchive provides tar (and cpio)
-            if "libarchive" not in chimera_hostmakedepends: # Avoid duplicates if cpio also added it
-                chimera_hostmakedepends.append("libarchive")
-        else:
-            chimera_hostmakedepends.append(dep)
+    if "bc" in pkgb_makedepends and "bc-gh" not in chimera_hostmakedepends:
+        chimera_hostmakedepends.append("bc-gh")
+    if "git" in pkgb_makedepends and "git" not in chimera_hostmakedepends:
+        chimera_hostmakedepends.append("git")
+    # cpio, libelf, perl, tar, xz, python, gettext are likely covered by base-kernel-devel or its chain.
+    # If cbuild complains, we can add them back specifically.
     
     hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in chimera_hostmakedepends])
     

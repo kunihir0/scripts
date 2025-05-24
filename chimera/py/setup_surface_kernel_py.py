@@ -166,28 +166,12 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
     pkgver_match = re.search(r"^\s*pkgver=([^\s#]+)", content, re.MULTILINE)
     if pkgver_match:
         original_pkgver_str = pkgver_match.group(1).strip().strip("'\"")
-        # data["original_pkgver"] = original_pkgver_str # Keep for _srctag logic
-        # # Sanitize pkgver for template.py (apk format: X.Y.Z)
-        # sanitized_pkgver_match = re.match(r"(\d+\.\d+(\.\d+)?)", original_pkgver_str)
-        # if sanitized_pkgver_match:
-        #     data["pkgver"] = sanitized_pkgver_match.group(1) # This will be overridden by args.kernel_version
-        # else:
-        #     _print_message(f"Could not sanitize 'pkgver': {original_pkgver_str}", level="error")
-        #     sys.exit(1)
         data["pkgver_from_pkgbuild"] = original_pkgver_str # Store for potential use if needed
-    # else:
-        # _print_message("Could not parse 'pkgver' from PKGBUILD.", level="error") # No longer fatal if PKGBUILD is optional
-        # sys.exit(1)
-
+    
     pkgrel_match = re.search(r"^\s*pkgrel=([^\s#]+)", content, re.MULTILINE)
     if pkgrel_match:
         data["pkgrel_from_pkgbuild"] = pkgrel_match.group(1).strip().strip("'\"") # Store for potential use
-    # else:
-        # _print_message("Could not parse 'pkgrel' from PKGBUILD.", level="error") # No longer fatal
-        # sys.exit(1)
 
-    # _srctag logic might be removed or changed as we source from kernel.org
-    # For now, keep it if PKGBUILD is parsed, but it won't be the primary source for URLs
     if "pkgver_from_pkgbuild" in data:
         pkgver_for_srctag = data["pkgver_from_pkgbuild"]
         pkgver_parts_for_srctag = pkgver_for_srctag.split('.')
@@ -237,23 +221,17 @@ def sanitize_config_file(file_path: pathlib.Path) -> str:
     Read and sanitize a kernel config file to ensure it's compatible with merge_config.sh
     """
     try:
-        # Try reading as UTF-8 first
         content = file_path.read_text(encoding='utf-8')
     except UnicodeDecodeError:
-        # Fallback for files that might have non-UTF-8 chars
         _print_message(f"Warning: UTF-8 decode failed for {file_path.name}, trying latin-1", level="warning", indent=3)
         content = file_path.read_text(encoding='latin-1')
     
-    # Normalize line endings to Unix LF
     content = content.replace('\r\n', '\n').replace('\r', '\n')
     
-    # Remove any trailing whitespace from lines and ensure file ends with newline
     lines = []
     for line in content.splitlines():
-        # Remove trailing whitespace but preserve the line structure
         lines.append(line.rstrip())
     
-    # Ensure the file ends with a single newline
     sanitized_content = '\n'.join(lines)
     if sanitized_content and not sanitized_content.endswith('\n'):
         sanitized_content += '\n'
@@ -264,14 +242,14 @@ def setup_cport_directory(
     output_cport_name: str,
     force_overwrite: bool,
     kernel_stuff_dir: pathlib.Path,
-    surface_configs_dir: pathlib.Path,
+    surface_configs_dir: pathlib.Path, # This argument is kept for now but its usage is conditional/informational
     pkgbuild_data: Dict[str, Any],
-    linux_surface_repo_base_path: pathlib.Path
+    linux_surface_repo_base_path: pathlib.Path # This argument is kept for now but its usage is conditional/informational
 ) -> Dict[str, str]:
     target_cport_path = CPORTS_MAIN_DIR / output_cport_name
     files_dir = target_cport_path / "files"
-    # Note: We'll move patches to a different directory to avoid automatic application
-    surface_patches_dir = target_cport_path / "surface_patches"
+    patches_dir = target_cport_path / "patches" # For auto-applied patches like musl fix
+    # surface_patches_dir is no longer created here, as surface series patches are handled by template.py
 
     if target_cport_path.exists():
         if force_overwrite:
@@ -284,7 +262,7 @@ def setup_cport_directory(
     _print_message(f"Creating cport directory: {target_cport_path}", indent=1)
     target_cport_path.mkdir(parents=True)
     files_dir.mkdir()
-    surface_patches_dir.mkdir()  # Use custom name to avoid cbuild auto-patch
+    patches_dir.mkdir() # Ensure patches directory for auto-apply patches is created
 
     # Create mv-debug.sh script in files_dir
     _print_message("Creating mv-debug.sh script...", indent=2)
@@ -368,21 +346,8 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
     mv_debug_script_path.chmod(0o755)
     _print_message(f"mv-debug.sh created at {mv_debug_script_path}", indent=3)
 
-    # Copy and sanitize config files
     _print_message("Copying and sanitizing configuration files...", indent=2)
     
-    def copy_and_sanitize_config(src_path: pathlib.Path, dest_path: pathlib.Path):
-        """Copy and sanitize config files to prevent sed errors"""
-        _print_message(f"Processing {src_path.name}...", indent=3)
-        
-        sanitized_content = sanitize_config_file(src_path)
-        
-        # Write the sanitized content as UTF-8
-        dest_path.write_text(sanitized_content, encoding='utf-8')
-        
-        # Preserve original file permissions
-        shutil.copymode(src_path, dest_path)
-
     # Copy base config files if kernel_stuff_dir is provided
     if kernel_stuff_dir and (kernel_stuff_dir / "config").is_file():
         copy_and_sanitize_config(kernel_stuff_dir / "config", files_dir / "config.x86_64") # Assuming x86_64 for now
@@ -402,40 +367,21 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
     if surface_configs_dir: # This argument is now optional
         _print_message(f"Note: --surface-configs-path ('{surface_configs_dir}') was provided, but surface configs are now intended to be sourced from the downloaded archive by the template.py.", level="info", indent=3)
 
-
-    # pkgver = pkgbuild_data["pkgver"] # This is available via args.kernel_version
-    # kernel_major_minor = ".".join(pkgver.split(".")[:2])
-    
-    # The block for copying surface_config from a local path (args.surface_configs_dir)
-    # is removed. The generated template.py will source this from the downloaded
-    # linux-surface archive during its configure() step.
-
-    # The block for copying patches from a local linux_surface_repo_base_path
-    # is also removed. The generated template.py will source these from the
-    # downloaded linux-surface archive during its prepare() step.
-
     _print_message("Setting up 'patches/' directory for auto-applied critical patches (e.g., musl fixes)...", indent=2)
     # Only essential, non-series patches (like musl fixes) go into the cport's 'patches/' dir for cbuild's auto-patching.
     # Surface-specific series patches are handled by the generated template.py from the downloaded archive.
 
     # Add fix-musl-objtool.patch
-    # This should ideally be a file copied from a known good source, or its content embedded.
-    # For now, let's create a placeholder in patches/
     musl_patch_content = """--- a/tools/objtool/Makefile
 +++ b/tools/objtool/Makefile
 @@ -30,7 +30,7 @@
  INCLUDES := -I$(srctree)/tools/include \\
-      -I$(srctree)/tools/objtool/include \\
-      -I$(srctree)/tools/objtool/arch/$(SRCARCH)/include
+ 	    -I$(srctree)/tools/objtool/include \\
+ 	    -I$(srctree)/tools/objtool/arch/$(SRCARCH)/include
 -CFLAGS   := -Werror $(WARNINGS) $(KBUILD_HOSTCFLAGS) -g $(INCLUDES) $(LIBELF_FLAGS)
 +CFLAGS   := -Werror $(WARNINGS) $(KBUILD_HOSTCFLAGS) -g $(INCLUDES) $(LIBELF_FLAGS) -D__always_inline=inline
  LDFLAGS  += $(LIBELF_LIBS) $(LIBSUBCMD) $(KBUILD_HOSTLDFLAGS)
 """
-    # Ensure patches_dir is defined (it was defined earlier in this function in a previous diff)
-    patches_dir = target_cport_path / "patches" # Re-ensure it's defined in this scope
-    if not patches_dir.exists(): # Should have been created earlier
-        patches_dir.mkdir()
-
     musl_patch_path = patches_dir / "0001-fix-musl-objtool.patch"
     musl_patch_path.write_text(musl_patch_content)
     _print_message(f"Created placeholder musl fix patch: {musl_patch_path}", indent=3)
@@ -449,7 +395,6 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
     # Base config is now named config.x86_64
     if (files_dir / "config.x86_64").exists():
         file_checksums["config.x86_64"] = calculate_sha256(files_dir / "config.x86_64")
-    # surface.config and arch.config are no longer copied by this script to files/
         
     return file_checksums
 
@@ -487,6 +432,9 @@ def generate_template_py_content(
     sha256_kernel_patch = "SHA256_LINUX_PATCH_XZ_PLACEHOLDER"
     sha256_surface_archive = "SHA256_SURFACE_ARCHIVE_PLACEHOLDER"
 
+    # Define the make_env block as a separate, raw string to avoid f-string parsing issues.
+    # The indentation here is important for how it will appear in the final template.py.
+    # Note: The leading space on each line of the dictionary content is intentional for template formatting.
     make_env_block_for_template = """\
 make_env = {
     "KBUILD_BUILD_USER": "chimera",
@@ -543,7 +491,7 @@ options = [
 # Default make_env for kernel builds
 # KBUILD_BUILD_TIMESTAMP is often set by cbuild itself via self.source_date_epoch_bsd
 # but can be made explicit if needed.
-    {make_env_block_for_template}
+{make_env_block_for_template}
 # Add KBUILD_BUILD_TIMESTAMP using self.source_date_epoch_bsd
 # This needs to be done carefully as self is not available at template string definition time.
 # It's better to set this in the hooks directly:
@@ -565,48 +513,16 @@ def prepare(self):
         self.do("make", *_make_vars, "defconfig")
 
         self.log("Running make kernelrelease and creating version file...")
-        # Construct the make command string within the template's execution context
-        # _make_vars is a Python list defined within the generated prepare()
-        # We need to generate Python code that joins it and then uses it in an f-string for self.do
-        # This will be an f-string within an f-string.
-        # The _make_vars list is defined in the generated template's prepare() scope.
-        # We need to generate Python code that constructs the shell command string
-        # at template execution time.
-        # Generated Python lines will be:
-        #   make_cmd_list_for_kr = ["make"] + _make_vars + ["-s", "kernelrelease"]
-        #   shell_cmd_for_kr = " ".join(make_cmd_list_for_kr) + " > version"
-        #   self.do("sh", "-c", shell_cmd_for_kr)
-        # This needs to be written as a multi-line string or escaped correctly.
-        # Let's generate the direct shell command string, ensuring that the Python list _make_vars
-        # is joined correctly *within the generated template's execution*.
-        # The f-string below is for the generator. The {{}} are for the template.
-        # No, this is still tricky. The join needs to happen in the template.
-        # The most straightforward way to generate this is to write the Python lines that do the join.
-
-        # Corrected approach: Generate Python lines that build and execute the command
-        # These lines will be part of the generated template.py
         generated_code_for_make_kr = '''
         make_cmd_parts_for_kr = ["make"] + _make_vars + ["-s", "kernelrelease"]
         shell_command_for_kr = " ".join(make_cmd_parts_for_kr) + " > version"
         self.do("sh", "-c", shell_command_for_kr)
         '''
-        # We need to dedent and correctly incorporate this into the f-string.
-        # For simplicity in this diff, let's assume a slightly less dynamic but correct shell command generation.
-        # The _make_vars list is defined in the template. We want to pass its elements to make.
-        # The self.do() command takes *args.
-        # self.do("make", *_make_vars, "-s", "kernelrelease") # This would work if not for redirection.
-        # So, for redirection, we must use sh -c.
-        # The string for sh -c must be "make VAR1=val1 VAR2=val2 -s kernelrelease > version"
-        # The _make_vars list in the template is like ["VAR1=val1", "VAR2=val2"].
-        # So, in the template, we need: " ".join(_make_vars)
-        # The generator produces:
         self.do("sh", "-c", f"make {{' '.join(_make_vars)}} -s kernelrelease > version")
 
-        # Read the kernelrelease from the created 'version' file for subsequent use
-        # The following lines are part of the *generated template string*:
         kernelrelease_content_out = self.do("cat", "version", capture_output=True, check=True)
-        kernelrelease = kernelrelease_content_out.stdout.strip() # kernelrelease is a Python var in template
-        self.log(f"Kernel release from version file: {{kernelrelease}}") # Correctly escaped for generator
+        kernelrelease = kernelrelease_content_out.stdout.strip() 
+        self.log(f"Kernel release from version file: {{kernelrelease}}") 
 
         self.log("Running make mrproper...")
         self.do("make", *_make_vars, "mrproper")
@@ -619,7 +535,6 @@ def prepare(self):
             self.do("git", "add", ".")
             self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit before patching")
 
-        # Use surface_patches directory instead of patches to avoid cbuild auto-patch
         surface_patches_dir = self.cwd / "surface_patches"
         if surface_patches_dir.is_dir():
             patch_file_host_paths = sorted(list(surface_patches_dir.glob("*.patch")))
@@ -644,8 +559,6 @@ def prepare(self):
         chroot_surface_config_path = f"/tmp/{{host_surface_config_file.name}}"
         chroot_arch_config_path = f"/tmp/{{host_arch_config_file.name}}"
         
-        # Use a more robust approach for config merging
-        # First, copy configs to working directory to avoid path issues
         self.do("cp", chroot_config_path, ".config.base", 
                 tmpfiles=[host_config_file])
         self.do("cp", chroot_surface_config_path, ".config.surface", 
@@ -653,44 +566,35 @@ def prepare(self):
         self.do("cp", chroot_arch_config_path, ".config.arch", 
                 tmpfiles=[host_arch_config_file])
         
-        # Try the merge script with local files
         try:
             self.do("./scripts/kconfig/merge_config.sh", "-m", 
                     ".config.base", ".config.surface", ".config.arch")
         except Exception as e:
             self.log_warn(f"merge_config.sh failed, trying manual merge: {{e}}")
-            # Fallback: manual config merge
             self.do("cp", ".config.base", ".config")
-            # Append surface config
             self.do("sh", "-c", "cat .config.surface >> .config")
-            # Append arch config  
             self.do("sh", "-c", "cat .config.arch >> .config")
 
         self.log("Running make olddefconfig...")
-        # kernelrelease is a Python variable in the template's prepare() scope.
-        # The f-string for KERNELRELEASE= needs to be evaluated by the template, so escape for generator.
-        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "olddefconfig") # Ensuring double braces
-        self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}") # Correctly escaped for generator
+        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "olddefconfig") 
+        self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}") 
 
 def build(self):
-    _make_vars = [ # This _make_vars is local to build() in generated template
+    _make_vars = [ 
         "HOSTCC=clang", "CC=clang", "LD=ld.lld",
         "AR=llvm-ar", "NM=llvm-nm", "OBJCOPY=llvm-objcopy", "OBJDUMP=llvm-objdump"
     ]
     with self.pushd(self.build_wrksrc):
-        # Read the version file created in prepare()
         kernelrelease = (self.chroot_cwd / "version").read_text().strip()
-        # kernelrelease is a Python var in template's build() scope.
-        # The f-strings for log and make need to be evaluated by the template.
-        self.log(f"Building kernel version {{kernelrelease}}") # Correctly escaped
-        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "all") # Correctly escaped
+        self.log(f"Building kernel version {{kernelrelease}}") 
+        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "all") 
 
 def install(self):
     with self.pushd(self.build_wrksrc):
-        kernelrelease = (self.chroot_cwd / "version").read_text().strip() # Reads file, kernelrelease is Python var
-        self.log(f"Installing kernel version {{kernelrelease}}") # Correctly escaped for generator
+        kernelrelease = (self.chroot_cwd / "version").read_text().strip() 
+        self.log(f"Installing kernel version {{kernelrelease}}") 
         
-        modulesdir = self.destdir / f"usr/lib/modules/{{kernelrelease}}" # Correctly escaped for generator
+        modulesdir = self.destdir / f"usr/lib/modules/{{kernelrelease}}" 
         image_name_out = self.do("make", "-s", "image_name", capture_output=True, check=True)
         image_name = image_name_out.stdout.strip()
 
@@ -751,8 +655,7 @@ def install(self):
         
         self.log("Setting up /usr/src symlink...")
         self.install_dir(self.destdir / "usr/src")
-        # kernelrelease is Python var in template's install() scope
-        self.ln_s(f"../lib/modules/{{kernelrelease}}/build", self.destdir / f"usr/src/{{self.pkgname}}", relative=True) # Correctly escaped
+        self.ln_s(f"../lib/modules/{{kernelrelease}}/build", self.destdir / f"usr/src/{{self.pkgname}}", relative=True) 
 
 @subpackage(f"{{pkgname}}-devel")
 def _(self):
@@ -806,8 +709,6 @@ def main() -> None:
         if pkgbuild_file_path.is_file():
             parsed_data_from_pkgb = parse_pkgbuild(pkgbuild_file_path)
             pkgbuild_data_main["makedepends"] = parsed_data_from_pkgb.get("makedepends", [])
-            # patch_filenames from PKGBUILD might be used as a reference or ignored
-            # as patches will primarily come from the linux-surface archive
             pkgbuild_data_main["patch_filenames_from_pkgbuild"] = parsed_data_from_pkgb.get("patch_filenames", [])
             _print_message(f"  Found {len(pkgbuild_data_main['makedepends'])} makedepends.", indent=2)
             _print_message(f"  Found {len(pkgbuild_data_main.get('patch_filenames_from_pkgbuild',[]))} patches listed in PKGBUILD (for reference).", indent=2)
@@ -820,12 +721,8 @@ def main() -> None:
     # Validate other paths if they are still mandatory or used
     if args.surface_configs_path and not args.surface_configs_path.is_dir():
         _print_message(f"Warning: surface_configs_path '{args.surface_configs_path}' not found or not a directory.", level="warning")
-        # This path might become fully optional if configs are sourced from the surface archive
     
-    # LINUX_SURFACE_REPO_PATH is for local patch sourcing, which will change.
-    # For now, keep the check if it's used by setup_cport_directory for patches.
-    # This will be re-evaluated when patch sourcing is updated.
-    if not LINUX_SURFACE_REPO_PATH.is_dir() and pkgbuild_data_main.get("patch_filenames_from_pkgbuild"): # Only error if we might try to use it
+    if not LINUX_SURFACE_REPO_PATH.is_dir() and pkgbuild_data_main.get("patch_filenames_from_pkgbuild"): 
         _print_message(f"Error: Linux Surface repository not found at '{LINUX_SURFACE_REPO_PATH}', which might be needed for PKGBUILD-listed patches. Please ensure it's cloned correctly or remove patch references if sourcing differently.", level="error")
         sys.exit(1)
 
@@ -834,10 +731,10 @@ def main() -> None:
     file_checksums = setup_cport_directory(
         args.output_name,
         args.force,
-        args.kernel_stuff_path, # May be None
-        args.surface_configs_path, # May be None
-        pkgbuild_data_main, # Now contains primary versioning info
-        LINUX_SURFACE_REPO_PATH # Role of this path will change
+        args.kernel_stuff_path, 
+        args.surface_configs_path, 
+        pkgbuild_data_main, 
+        LINUX_SURFACE_REPO_PATH 
     )
     _print_message("Cport directory and files prepared.", level="success", indent=1)
 

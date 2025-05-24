@@ -347,9 +347,7 @@ def generate_template_py_content(
         else:
             chimera_hostmakedepends.append(dep)
     
-    _print_message(f"DEBUG: Chimera hostmakedepends before join: {chimera_hostmakedepends}", level="info", indent=1) # DEBUG
     hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in chimera_hostmakedepends])
-    _print_message(f"DEBUG: Generated hostmakedepends_list_str: {hostmakedepends_list_str}", level="info", indent=1) # DEBUG
     
     # Prepare KBUILD_BUILD_TIMESTAMP for make_ENV
     # Rely on cbuild to set SOURCE_DATE_EPOCH, and kernel Makefile to use it.
@@ -372,6 +370,15 @@ url = "https://github.com/linux-surface/linux-surface"
 # Use a tarball archive of the specific git tag.
 # _srctag_value will be substituted by the generator.
 _srctag_for_archive = "{_srctag_value}"
+# GitHub archives typically extract to <repo_name>-<tag_name_without_v_prefix>
+# However, for the archlinux/linux repo, it seems to extract to just 'linux' + the commit hash or tag.
+# Let's use the _srcname from PKGBUILD as a hint, which is 'archlinux-linux'.
+# Or more generically, for github archives, it's often <repo_name>-<stripped_tag>
+# The archlinux PKGBUILD uses _srcname=archlinux-linux.
+# The tarball from github for tag v6.14.2-arch1 extracts to 'linux-6.14.2-arch1'
+# So, build_wrksrc should be "linux-{{_srctag_for_archive.lstrip('v')}}"
+build_wrksrc = f"linux-{{_srctag_for_archive.lstrip('v')}}"
+
 source = [
     f"https://github.com/archlinux/linux/archive/refs/tags/{{_srctag_for_archive}}.tar.gz>{{pkgname}}-{{pkgver}}-source.tar.gz"
 ]

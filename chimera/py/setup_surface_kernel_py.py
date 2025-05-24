@@ -521,7 +521,7 @@ make_env = {
 # Add KBUILD_BUILD_TIMESTAMP using self.source_date_epoch_bsd
 # This needs to be done carefully as self is not available at template string definition time.
 # It's better to set this in the hooks directly:
-# env_for_make = {**self.make_env, "KBUILD_BUILD_TIMESTAMP": self.source_date_epoch_bsd}
+# env_for_make = {{**self.make_env, "KBUILD_BUILD_TIMESTAMP": self.source_date_epoch_bsd}}
 # And then pass env=env_for_make to self.do("make", ..., env=env_for_make)
 
 def prepare(self):

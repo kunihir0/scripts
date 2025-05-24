@@ -112,16 +112,28 @@ def parse_arguments() -> argparse.Namespace:
         description="Generate a Chimera Linux cports template for linux-surface."
     )
     parser.add_argument(
+        "--kernel-version",
+        type=str,
+        required=True,
+        help="Target kernel version (e.g., '6.8.1'). This will be used as pkgver."
+    )
+    parser.add_argument(
+        "--surface-archive-tag",
+        type=str,
+        required=True,
+        help="Git tag or commit SHA for the linux-surface project archive (e.g., 'v6.8.1-arch1')."
+    )
+    parser.add_argument(
         "--kernel-stuff-path",
         type=pathlib.Path,
-        default=WORKSPACE_ROOT / "chimera" / "py" / "docs" / "kernel_stuff",
-        help="Path to the directory containing PKGBUILD, config, and arch.config (default: chimera/py/docs/kernel_stuff/)"
+        default=None, # Made optional, new args take precedence for versioning
+        help="Optional path to a directory containing an Arch PKGBUILD (for makedepends) and base config files."
     )
     parser.add_argument(
         "--surface-configs-path",
         type=pathlib.Path,
-        default=WORKSPACE_ROOT / "chimera" / "py" / "docs" / "kernel_stuff" / "surface_configs",
-        help="Path to the directory containing surface-X.Y.config files (default: chimera/py/docs/kernel_stuff/surface_configs/)"
+        default=None, # Made optional, configs should ideally come from the surface archive
+        help="Optional path to a directory containing surface-X.Y.config files if not using the archive."
     )
     parser.add_argument(
         "--output-name",
@@ -154,38 +166,41 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
     pkgver_match = re.search(r"^\s*pkgver=([^\s#]+)", content, re.MULTILINE)
     if pkgver_match:
         original_pkgver_str = pkgver_match.group(1).strip().strip("'\"")
-        data["original_pkgver"] = original_pkgver_str # Keep for _srctag logic
-        # Sanitize pkgver for template.py (apk format: X.Y.Z)
-        sanitized_pkgver_match = re.match(r"(\d+\.\d+(\.\d+)?)", original_pkgver_str)
-        if sanitized_pkgver_match:
-            data["pkgver"] = sanitized_pkgver_match.group(1)
-        else:
-            _print_message(f"Could not sanitize 'pkgver': {original_pkgver_str}", level="error")
-            sys.exit(1)
-    else:
-        _print_message("Could not parse 'pkgver' from PKGBUILD.", level="error")
-        sys.exit(1)
+        # data["original_pkgver"] = original_pkgver_str # Keep for _srctag logic
+        # # Sanitize pkgver for template.py (apk format: X.Y.Z)
+        # sanitized_pkgver_match = re.match(r"(\d+\.\d+(\.\d+)?)", original_pkgver_str)
+        # if sanitized_pkgver_match:
+        #     data["pkgver"] = sanitized_pkgver_match.group(1) # This will be overridden by args.kernel_version
+        # else:
+        #     _print_message(f"Could not sanitize 'pkgver': {original_pkgver_str}", level="error")
+        #     sys.exit(1)
+        data["pkgver_from_pkgbuild"] = original_pkgver_str # Store for potential use if needed
+    # else:
+        # _print_message("Could not parse 'pkgver' from PKGBUILD.", level="error") # No longer fatal if PKGBUILD is optional
+        # sys.exit(1)
 
     pkgrel_match = re.search(r"^\s*pkgrel=([^\s#]+)", content, re.MULTILINE)
     if pkgrel_match:
-        data["pkgrel"] = pkgrel_match.group(1).strip().strip("'\"")
-    else:
-        _print_message("Could not parse 'pkgrel' from PKGBUILD.", level="error")
-        sys.exit(1)
+        data["pkgrel_from_pkgbuild"] = pkgrel_match.group(1).strip().strip("'\"") # Store for potential use
+    # else:
+        # _print_message("Could not parse 'pkgrel' from PKGBUILD.", level="error") # No longer fatal
+        # sys.exit(1)
 
-    # Calculate _srctag based on pkgver
-    pkgver_for_srctag = data["original_pkgver"]
-    pkgver_parts_for_srctag = pkgver_for_srctag.split('.')
-    if len(pkgver_parts_for_srctag) > 1 and not pkgver_parts_for_srctag[-1].isdigit(): # like .arch1
-        _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}"
-    else: # like .2
-         _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}" if len(pkgver_parts_for_srctag) > 1 else pkgver_for_srctag
+    # _srctag logic might be removed or changed as we source from kernel.org
+    # For now, keep it if PKGBUILD is parsed, but it won't be the primary source for URLs
+    if "pkgver_from_pkgbuild" in data:
+        pkgver_for_srctag = data["pkgver_from_pkgbuild"]
+        pkgver_parts_for_srctag = pkgver_for_srctag.split('.')
+        if len(pkgver_parts_for_srctag) > 1 and not pkgver_parts_for_srctag[-1].isdigit(): # like .arch1
+            _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}"
+        else: # like .2
+             _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}" if len(pkgver_parts_for_srctag) > 1 else pkgver_for_srctag
 
-    srctag_match = re.search(r"^\s*_srctag=v([^\s#]+)", content, re.MULTILINE)
-    if srctag_match:
-        data["_srctag"] = "v" + srctag_match.group(1).strip().strip("'\"").replace("${_fullver}", _fullver_pkb)
-    else:
-        data["_srctag"] = f"v{_fullver_pkb}"
+        srctag_match = re.search(r"^\s*_srctag=v([^\s#]+)", content, re.MULTILINE)
+        if srctag_match:
+            data["_srctag_from_pkgbuild"] = "v" + srctag_match.group(1).strip().strip("'\"").replace("${_fullver}", _fullver_pkb)
+        else:
+            data["_srctag_from_pkgbuild"] = f"v{_fullver_pkb}"
 
     makedepends_match = re.search(r"^\s*makedepends=\((.*?)\)", content, re.DOTALL | re.MULTILINE)
     if makedepends_match:
@@ -271,6 +286,88 @@ def setup_cport_directory(
     files_dir.mkdir()
     surface_patches_dir.mkdir()  # Use custom name to avoid cbuild auto-patch
 
+    # Create mv-debug.sh script in files_dir
+    _print_message("Creating mv-debug.sh script...", indent=2)
+    mv_debug_script_content = """#!/bin/sh
+# mv-debug.sh - Helper to separate debug symbols for Chimera Linux
+
+set -e
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 <file_to_process>"
+    exit 1
+fi
+
+mod="$1"
+debugdir_base="usr/lib/debug"
+mod_rel_path="${mod#./}"
+mod_debug_path="${debugdir_base}/${mod_rel_path}"
+
+OBJCOPY="${OBJCOPY:-llvm-objcopy}"
+STRIP="${STRIP:-llvm-strip}"
+
+if [ ! -f "$mod" ]; then
+    echo "Error: File '$mod' not found!"
+    exit 1
+fi
+
+echo "Processing '$mod' for debug symbols..."
+
+mkdir -p "$(dirname "$mod_debug_path")"
+
+if ! "$OBJCOPY" --only-keep-debug "$mod" "$mod_debug_path"; then
+    echo "Error: $OBJCOPY --only-keep-debug failed for '$mod'"
+    exit 1
+fi
+
+if ! "$OBJCOPY" --add-gnu-debuglink="$mod_debug_path" "$mod"; then
+    echo "Error: $OBJCOPY --add-gnu-debuglink failed for '$mod' (linking to $mod_debug_path)"
+    exit 1
+fi
+
+if ! "$STRIP" --strip-debug "$mod"; then
+    echo "Error: $STRIP --strip-debug failed for '$mod'"
+    exit 1
+fi
+
+compressed_debug_path=""
+if command -v xz > /dev/null; then
+    if xz -T0 -zc "$mod_debug_path" > "${mod_debug_path}.xz"; then
+        rm "$mod_debug_path"
+        compressed_debug_path="${mod_debug_path}.xz"
+        echo "Compressed debug symbols to '${compressed_debug_path}'"
+    else
+        echo "Warning: xz compression failed for '$mod_debug_path'. Leaving uncompressed."
+    fi
+elif command -v gzip > /dev/null; then
+    if gzip -9nf "$mod_debug_path"; then
+        compressed_debug_path="${mod_debug_path}.gz"
+        echo "Compressed debug symbols to '${compressed_debug_path}'"
+    else
+        echo "Warning: gzip compression failed for '$mod_debug_path'. Leaving uncompressed."
+    fi
+else
+    echo "Warning: No xz or gzip found. Debug symbols for '$mod' will not be compressed."
+fi
+
+if [ -n "$compressed_debug_path" ] && [ "$compressed_debug_path" != "$mod_debug_path" ]; then
+    echo "Updating debug link in '$mod' to point to '${compressed_debug_path}'"
+    if ! "$OBJCOPY" --strip-gnu-debuglink "$mod"; then
+        echo "Warning: Failed to strip old gnu-debuglink from '$mod'. Link update might be problematic."
+    fi
+    if ! "$OBJCOPY" --add-gnu-debuglink="$compressed_debug_path" "$mod"; then
+        echo "Error: $OBJCOPY --add-gnu-debuglink failed for '$mod' (linking to ${compressed_debug_path})"
+        exit 1
+    fi
+fi
+
+echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-$mod_debug_path}'"
+"""
+    mv_debug_script_path = files_dir / "mv-debug.sh"
+    mv_debug_script_path.write_text(mv_debug_script_content)
+    mv_debug_script_path.chmod(0o755)
+    _print_message(f"mv-debug.sh created at {mv_debug_script_path}", indent=3)
+
     # Copy and sanitize config files
     _print_message("Copying and sanitizing configuration files...", indent=2)
     
@@ -322,11 +419,15 @@ def setup_cport_directory(
             _print_message(f"Warning: Patch file '{patch_filename}' not found in {source_patches_dir}", level="warning", indent=3)
 
     # Calculate checksums for files in files/
-    file_checksums = {
-        "config": calculate_sha256(files_dir / "config"),
-        "surface.config": calculate_sha256(files_dir / "surface.config"),
-        "arch.config": calculate_sha256(files_dir / "arch.config"),
+    file_checksums = { # For files managed by the generator script itself
+        "mv-debug.sh": calculate_sha256(mv_debug_script_path),
+        "0001-fix-musl-objtool.patch": calculate_sha256(musl_patch_path),
     }
+    # Base config is now named config.x86_64
+    if (files_dir / "config.x86_64").exists():
+        file_checksums["config.x86_64"] = calculate_sha256(files_dir / "config.x86_64")
+    # surface.config and arch.config are no longer copied by this script to files/
+        
     return file_checksums
 
 def generate_template_py_content(
@@ -334,37 +435,62 @@ def generate_template_py_content(
     pkgbuild_data: Dict[str, Any],
     file_checksums: Dict[str, str]
 ) -> str:
-    pkgver = pkgbuild_data["pkgver"]
-    pkgrel = pkgbuild_data["pkgrel"]
-    _srctag_value = pkgbuild_data["_srctag"]
-    
+    pkgver = pkgbuild_data["pkgver"] # Now from args.kernel_version
+    pkgrel = pkgbuild_data["pkgrel"] # Now from args or defaulted to 0
+    surface_archive_tag = pkgbuild_data["surface_archive_tag"] # New, from args
+
+    # Determine major.minor for kernel.org URL
+    kernel_major_minor_parts = pkgver.split('.')
+    kernel_major = kernel_major_minor_parts[0]
+    kernel_major_minor = f"{kernel_major_minor_parts[0]}.{kernel_major_minor_parts[1]}"
+
     chimera_hostmakedepends = ["base-kernel-devel"]
-    
+    # makedepends are now conditionally parsed from PKGBUILD
     pkgb_makedepends = pkgbuild_data.get("makedepends", [])
     if "bc" in pkgb_makedepends and "bc-gh" not in chimera_hostmakedepends:
-        chimera_hostmakedepends.append("bc-gh")
+        chimera_hostmakedepends.append("bc-gh") # bc-gh is Chimera's bc
     if "git" in pkgb_makedepends and "git" not in chimera_hostmakedepends:
         chimera_hostmakedepends.append("git")
+    # Add other common kernel build deps based on Void analysis / Chimera conventions
+    common_kernel_deps = ["elfutils-devel", "openssl-devel", "perl", "flex", "bison", "kmod-devel", "python"]
+    for dep in common_kernel_deps:
+        if dep not in chimera_hostmakedepends:
+            chimera_hostmakedepends.append(dep)
     
-    hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in chimera_hostmakedepends])
+    hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in sorted(list(set(chimera_hostmakedepends)))])
+
+    # Placeholder for checksums - these will need to be updated by the user
+    sha256_kernel_tar = "SHA256_LINUX_TAR_XZ_PLACEHOLDER"
+    sha256_kernel_patch = "SHA256_LINUX_PATCH_XZ_PLACEHOLDER"
+    sha256_surface_archive = "SHA256_SURFACE_ARCHIVE_PLACEHOLDER"
 
     template_str = f"""\
 # Auto-generated by setup_surface_kernel_py.py
 
 pkgname = "{output_cport_name}"
-pkgver = "{pkgver}"
-pkgrel = {pkgrel}
-pkgdesc = f"Linux kernel ({{pkgver.split('.')[0]}}.{{pkgver.split('.')[1]}} series) with Surface patches"
+pkgver = "{pkgver}" # e.g., 6.8.1
+pkgrel = {pkgrel} # e.g., 0
+pkgdesc = f"Linux kernel ({kernel_major_minor} series) with Surface patches"
 archs = ["x86_64"]
 license = "GPL-2.0-only"
 url = "https://github.com/linux-surface/linux-surface"
-
-_srctag_for_archive = "{_srctag_value}"
+build_wrksrc = f"linux-{kernel_major_minor}" # From kernel.org tarball
+# wrksrc will be default (pkgname-pkgver), cbuild handles this
 
 source = [
-    f"https://github.com/archlinux/linux/archive/refs/tags/{{_srctag_for_archive}}.tar.gz>{{pkgname}}-{{pkgver}}-source.tar.gz"
+    # 1. Base kernel from kernel.org
+    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz",
+    # 2. Incremental patch from kernel.org (for the specific pkgver)
+    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz",
+    # 3. Surface patches/configs archive from linux-surface GitHub
+    f"https://github.com/linux-surface/linux-surface/archive/refs/tags/{surface_archive_tag}.tar.gz>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
 ]
-sha256 = ["PLEASE_UPDATE_CHECKSUM_AND_REPLACE_THIS_STRING_WITH_THE_ACTUAL_SHA256"]
+sha256 = [
+    "{sha256_kernel_tar}", # For linux-{kernel_major_minor}.tar.xz
+    "{sha256_kernel_patch}", # For patch-{pkgver}.xz
+    "{sha256_surface_archive}"  # For {{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz
+]
+skip_extraction = [f"patch-{pkgver}.xz"] # Apply this manually
 
 hostmakedepends = [
     {hostmakedepends_list_str},
@@ -376,18 +502,27 @@ options = [
     "!check", "!debug", "!strip", "!scanrundeps", "!scanshlibs", "!lto",
     "textrels", "execstack", "foreignelf"
 ]
-
-make_env = {{
-    "KBUILD_BUILD_HOST": "chimera-linux",
-    "KBUILD_BUILD_USER": pkgname,
-    "HOSTCC": "clang",
-    "CC": "clang",
-    "LD": "ld.lld",
-    "AR": "llvm-ar",
-    "NM": "llvm-nm",
-    "OBJCOPY": "llvm-objcopy",
-    "OBJDUMP": "llvm-objdump",
-}}
+# Default make_env for kernel builds
+# KBUILD_BUILD_TIMESTAMP is often set by cbuild itself via self.source_date_epoch_bsd
+# but can be made explicit if needed.
+make_env = {
+    "KBUILD_BUILD_USER": "chimera",
+    "KBUILD_BUILD_HOST": "chimera.linux",
+    # Standard toolchain vars, cbuild usually sets these via tool_flags or profile
+    # "HOSTCC": "clang",
+    # "CC": "clang",
+    # "LD": "ld.lld",
+    # "AR": "llvm-ar",
+    # "NM": "llvm-nm",
+    # "OBJCOPY": "llvm-objcopy",
+    # "OBJDUMP": "llvm-objdump",
+    "LDFLAGS": "", # Explicitly clear LDFLAGS for kernel build
+}
+# Add KBUILD_BUILD_TIMESTAMP using self.source_date_epoch_bsd
+# This needs to be done carefully as self is not available at template string definition time.
+# It's better to set this in the hooks directly:
+# env_for_make = {**self.make_env, "KBUILD_BUILD_TIMESTAMP": self.source_date_epoch_bsd}
+# And then pass env=env_for_make to self.do("make", ..., env=env_for_make)
 
 def prepare(self):
     with self.pushd(self.build_wrksrc):
@@ -621,36 +756,67 @@ def main() -> None:
     _print_message("--- Linux Surface Cports Template Generator ---", message_styles=["bold", "purple"])
     args = parse_arguments()
 
-    if not args.kernel_stuff_path.is_dir():
-        _print_message(f"Error: kernel_stuff_path '{args.kernel_stuff_path}' not found or not a directory.", level="error")
-        sys.exit(1)
-    if not args.surface_configs_path.is_dir():
-        _print_message(f"Error: surface_configs_path '{args.surface_configs_path}' not found or not a directory.", level="error")
-        sys.exit(1)
-    if not LINUX_SURFACE_REPO_PATH.is_dir():
-        _print_message(f"Error: Linux Surface repository not found at '{LINUX_SURFACE_REPO_PATH}'. Please ensure it's cloned correctly.", level="error")
+    # --- Versioning and Source Information ---
+    # Primary versioning from command line arguments
+    pkgver_main = args.kernel_version
+    pkgrel_main = "0" # Default pkgrel, can be made an argument later if needed
+    surface_archive_tag_main = args.surface_archive_tag
+
+    _print_message(f"Target Kernel Version: {pkgver_main}", indent=1)
+    _print_message(f"Target Pkgrel: {pkgrel_main}", indent=1)
+    _print_message(f"Surface Archive Tag: {surface_archive_tag_main}", indent=1)
+
+    pkgbuild_data_main: Dict[str, Any] = {
+        "pkgver": pkgver_main,
+        "pkgrel": pkgrel_main,
+        "surface_archive_tag": surface_archive_tag_main,
+        "makedepends": [], # Initialize, will be populated if PKGBUILD is parsed
+        "patch_filenames": [] # Initialize, will be populated if PKGBUILD is parsed (though patch sourcing will change)
+    }
+
+    if args.kernel_stuff_path and args.kernel_stuff_path.is_dir():
+        _print_message(f"Optional: Reading PKGBUILD from {args.kernel_stuff_path} for makedepends...", message_styles=["bold"], indent=1)
+        pkgbuild_file_path = args.kernel_stuff_path / "PKGBUILD"
+        if pkgbuild_file_path.is_file():
+            parsed_data_from_pkgb = parse_pkgbuild(pkgbuild_file_path)
+            pkgbuild_data_main["makedepends"] = parsed_data_from_pkgb.get("makedepends", [])
+            # patch_filenames from PKGBUILD might be used as a reference or ignored
+            # as patches will primarily come from the linux-surface archive
+            pkgbuild_data_main["patch_filenames_from_pkgbuild"] = parsed_data_from_pkgb.get("patch_filenames", [])
+            _print_message(f"  Found {len(pkgbuild_data_main['makedepends'])} makedepends.", indent=2)
+            _print_message(f"  Found {len(pkgbuild_data_main.get('patch_filenames_from_pkgbuild',[]))} patches listed in PKGBUILD (for reference).", indent=2)
+        else:
+            _print_message(f"  PKGBUILD not found in {args.kernel_stuff_path}. Skipping.", level="warning", indent=2)
+    elif args.kernel_stuff_path: # Path provided but not a dir
+         _print_message(f"Warning: kernel_stuff_path '{args.kernel_stuff_path}' not found or not a directory. Skipping PKGBUILD parsing.", level="warning", indent=1)
+
+
+    # Validate other paths if they are still mandatory or used
+    if args.surface_configs_path and not args.surface_configs_path.is_dir():
+        _print_message(f"Warning: surface_configs_path '{args.surface_configs_path}' not found or not a directory.", level="warning")
+        # This path might become fully optional if configs are sourced from the surface archive
+    
+    # LINUX_SURFACE_REPO_PATH is for local patch sourcing, which will change.
+    # For now, keep the check if it's used by setup_cport_directory for patches.
+    # This will be re-evaluated when patch sourcing is updated.
+    if not LINUX_SURFACE_REPO_PATH.is_dir() and pkgbuild_data_main.get("patch_filenames_from_pkgbuild"): # Only error if we might try to use it
+        _print_message(f"Error: Linux Surface repository not found at '{LINUX_SURFACE_REPO_PATH}', which might be needed for PKGBUILD-listed patches. Please ensure it's cloned correctly or remove patch references if sourcing differently.", level="error")
         sys.exit(1)
 
-    _print_message("Step 1: Parsing PKGBUILD...", message_styles=["bold"])
-    pkgbuild_file_path = args.kernel_stuff_path / "PKGBUILD"
-    pkgbuild_data = parse_pkgbuild(pkgbuild_file_path)
-    _print_message(f"Parsed pkgver: {pkgbuild_data['pkgver']}, pkgrel: {pkgbuild_data['pkgrel']}", indent=1)
-    _print_message(f"Source tag: {pkgbuild_data['_srctag']}", indent=1)
-    _print_message(f"Found {len(pkgbuild_data['patch_filenames'])} patches listed in PKGBUILD.", indent=1)
 
     _print_message("Step 2: Setting up cport directory and files...", message_styles=["bold"])
     file_checksums = setup_cport_directory(
         args.output_name,
         args.force,
-        args.kernel_stuff_path,
-        args.surface_configs_path,
-        pkgbuild_data,
-        LINUX_SURFACE_REPO_PATH
+        args.kernel_stuff_path, # May be None
+        args.surface_configs_path, # May be None
+        pkgbuild_data_main, # Now contains primary versioning info
+        LINUX_SURFACE_REPO_PATH # Role of this path will change
     )
     _print_message("Cport directory and files prepared.", level="success", indent=1)
 
     _print_message("Step 3: Generating template.py content...", message_styles=["bold"])
-    template_content = generate_template_py_content(args.output_name, pkgbuild_data, file_checksums)
+    template_content = generate_template_py_content(args.output_name, pkgbuild_data_main, file_checksums)
     _print_message("template.py content generated.", indent=1)
 
     _print_message("Step 4: Writing template.py...", message_styles=["bold"])
@@ -689,11 +855,16 @@ def main() -> None:
     _print_message("--- Generation Complete! ---", level="star", message_styles=["bold"])
     _print_message(f"New cport template for '{args.output_name}' created at:", indent=1)
     _print_message(f"  {CPORTS_MAIN_DIR / args.output_name}", indent=2, message_styles=["cyan"])
-    _print_message("IMPORTANT: You need to update the 'sha256' in the generated template.py:", level="warning", indent=1)
-    _print_message(f"  1. Run: ./cbuild fetch main/{args.output_name}", indent=2)
-    _print_message(f"  2. cbuild will error and print the correct SHA256 checksum.", indent=2)
-    _print_message(f"  3. Edit '{target_template_py_path}' and replace the placeholder with the correct checksum.", indent=2)
-    _print_message("After updating the checksum, you can build the kernel with:", indent=1)
+    _print_message("IMPORTANT: You need to update the 'sha256' list in the generated template.py:", level="warning", indent=1)
+    _print_message(f"  The 'sha256' list has three placeholder entries corresponding to the three URLs in the 'source' list:", indent=2)
+    _print_message(f"    1. Kernel.org base tarball (e.g., linux-{pkgbuild_data_main['pkgver'].split('.')[0]}.{pkgbuild_data_main['pkgver'].split('.')[1]}.tar.xz)", indent=3)
+    _print_message(f"    2. Kernel.org incremental patch (e.g., patch-{pkgbuild_data_main['pkgver']}.xz)", indent=3)
+    _print_message(f"    3. Linux-surface archive (e.g., {args.output_name}-{pkgbuild_data_main['surface_archive_tag']}-surface-sources.tar.gz)", indent=3)
+    _print_message(f"  To get the checksums:", indent=2)
+    _print_message(f"    a. Run: ./cbuild fetch main/{args.output_name}", indent=3)
+    _print_message(f"    b. cbuild will download the files and print their SHA256 checksums (it might error if placeholders are still in use).", indent=3)
+    _print_message(f"    c. Edit '{target_template_py_path}' and replace the placeholders in the 'sha256' list with the correct checksums in the correct order.", indent=3)
+    _print_message("After updating the checksums, you can build the kernel with:", indent=1)
     _print_message(f"  ./cbuild pkg main/{args.output_name}", indent=2, message_styles=["green", "bold"])
     print("-" * 60)
 

@@ -214,8 +214,23 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
 
     makedepends_match = re.search(r"^\s*makedepends=\((.*?)\)", content, re.DOTALL | re.MULTILINE)
     if makedepends_match:
-        deps_str = makedepends_match.group(1)
-        data["makedepends"] = [dep.strip().strip("'\"") for dep in re.findall(r"[\w.-]+", deps_str)]
+        deps_content_str = makedepends_match.group(1)
+        parsed_deps = []
+        for line in deps_content_str.splitlines():
+            # Get content before any comment on that line
+            line_content_before_comment = line.split('#')[0].strip()
+            if not line_content_before_comment:
+                continue
+            # Split the valid part of the line by space, in case multiple deps are on one line (unlikely for PKGBUILD but robust)
+            for potential_dep in line_content_before_comment.split():
+                dep = potential_dep.strip().strip("'\"")
+                if dep: # Ensure it's not an empty string after stripping
+                    # Further ensure it's a valid package-like name (basic check)
+                    if re.match(r"^[a-zA-Z0-9_.+-]+$", dep):
+                         parsed_deps.append(dep)
+        data["makedepends"] = parsed_deps
+        if not parsed_deps and deps_content_str.strip(): # If original content wasn't empty but we got no deps
+             _print_message(f"Warning: Parsed 'makedepends' as empty, but content was: {deps_content_str}", level="warning")
     else:
         data["makedepends"] = []
         _print_message("Could not parse 'makedepends' from PKGBUILD. Assuming empty.", level="warning")

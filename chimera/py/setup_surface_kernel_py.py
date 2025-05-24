@@ -528,7 +528,7 @@ options = [
 # Default make_env for kernel builds
 # KBUILD_BUILD_TIMESTAMP is often set by cbuild itself via self.source_date_epoch_bsd
 # but can be made explicit if needed.
-make_env = {
+make_env = {{
     "KBUILD_BUILD_USER": "chimera",
     "KBUILD_BUILD_HOST": "chimera.linux",
     # Standard toolchain vars, cbuild usually sets these via tool_flags or profile
@@ -540,7 +540,7 @@ make_env = {
     # "OBJCOPY": "llvm-objcopy",
     # "OBJDUMP": "llvm-objdump",
     "LDFLAGS": "", # Explicitly clear LDFLAGS for kernel build
-}
+}}
 # Add KBUILD_BUILD_TIMESTAMP using self.source_date_epoch_bsd
 # This needs to be done carefully as self is not available at template string definition time.
 # It's better to set this in the hooks directly:

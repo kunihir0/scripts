@@ -420,18 +420,23 @@ def prepare(self):
         self.do("sh", "-c", f"echo '-{{self.pkgrel}}' > localversion.10-pkgrel")
         self.do("sh", "-c", f"echo '{{self.pkgname.replace('linux-', '')}}' > localversion.20-pkgname")
 
+        _make_vars = [
+            "HOSTCC=clang", "CC=clang", "LD=ld.lld",
+            "AR=llvm-ar", "NM=llvm-nm", "OBJCOPY=llvm-objcopy", "OBJDUMP=llvm-objdump"
+        ]
+
         self.log("Running make defconfig...")
-        self.do("make", "defconfig")
+        self.do("make", *_make_vars, "defconfig")
 
         self.log("Running make kernelrelease...")
-        kernelrelease_out = self.do("make", "-s", "kernelrelease", capture_output=True, check=True)
+        kernelrelease_out = self.do("make", *_make_vars, "-s", "kernelrelease", capture_output=True, check=True)
         kernelrelease = kernelrelease_out.stdout.strip()
         # Use self.do with shell redirection for robustness
         self.do("sh", "-c", f"echo '{{kernelrelease}}' > version") # kernelrelease is a Python var here
         self.log(f"Kernel release: {{kernelrelease}}")
 
         self.log("Running make mrproper...")
-        self.do("make", "mrproper")
+        self.do("make", *_make_vars, "mrproper")
 
         self.log("Applying patches...")
         if not (self.chroot_cwd / ".git").is_dir():
@@ -459,14 +464,18 @@ def prepare(self):
         )
 
         self.log("Running make olddefconfig...")
-        self.do("make", f"KERNELRELEASE={{kernelrelease}}", "olddefconfig")
+        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "olddefconfig")
         self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}")
 
 def build(self):
+    _make_vars = [ # Define again for this scope or pass from prepare if possible, for now redefine
+        "HOSTCC=clang", "CC=clang", "LD=ld.lld",
+        "AR=llvm-ar", "NM=llvm-nm", "OBJCOPY=llvm-objcopy", "OBJDUMP=llvm-objdump"
+    ]
     with self.pushd(self.build_wrksrc):
         kernelrelease = (self.chroot_cwd / "version").read_text().strip()
         self.log(f"Building kernel version {{kernelrelease}}...")
-        self.do("make", f"KERNELRELEASE={{kernelrelease}}", "all")
+        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "all")
 
 def install(self):
     with self.pushd(self.build_wrksrc):

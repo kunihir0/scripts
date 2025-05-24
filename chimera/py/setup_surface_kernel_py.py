@@ -174,62 +174,34 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
         sys.exit(1)
 
     # Calculate _srctag based on pkgver
-    # _shortver=${pkgver%.*}
-    # _fullver=${pkgver%.*}-${pkgver##*.}
-    # _srctag=v${_fullver}
-    # Use original_pkgver for _srctag calculation logic as it matches PKGBUILD's intent
     pkgver_for_srctag = data["original_pkgver"]
-    shortver = ".".join(pkgver_for_srctag.split(".")[:-1]) if '.' in pkgver_for_srctag else pkgver_for_srctag
-    suffix = pkgver_for_srctag.split(".")[-1] if '.' in pkgver_for_srctag else ""
-    
-    # The _fullver_pkb calculation below (lines 218-222 in previous version) correctly derives
-    # the necessary string component from pkgver_for_srctag for _srctag.
-    # The block that was here defining 'fullver' was redundant and the source of the NameError.
-    # Removing the problematic 'fullver' calculation block.
-
-    # The PKGBUILD _fullver is ${pkgver%.*}-${pkgver##*.}
-    # For "6.14.2.arch1": pkgver%.* is "6.14.2", pkgver##*. is "arch1" -> "6.14.2-arch1"
-    # For "6.14.2": pkgver%.* is "6.14", pkgver##*. is "2" -> "6.14-2" (This is Arch's bashism)
-    # We need the tag for archlinux/linux repo, which is usually vX.Y.Z-archN or vX.Y.Z
-    # The PKGBUILD's _srctag is v${_fullver}
-    # Let's try to replicate the PKGBUILD's _fullver logic for _srctag
-    
     pkgver_parts_for_srctag = pkgver_for_srctag.split('.')
     if len(pkgver_parts_for_srctag) > 1 and not pkgver_parts_for_srctag[-1].isdigit(): # like .arch1
         _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}"
     else: # like .2
          _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}" if len(pkgver_parts_for_srctag) > 1 else pkgver_for_srctag
 
-
-    # The _srctag in the PKGBUILD is `v${_fullver}` where _fullver is derived.
-    # For `pkgver=6.14.2.arch1`, `_fullver` becomes `6.14.2-arch1`, so `_srctag=v6.14.2-arch1`
-    # This seems to be the tag format for https://github.com/archlinux/linux
-    # Let's try to parse _srctag directly if available, otherwise compute.
     srctag_match = re.search(r"^\s*_srctag=v([^\s#]+)", content, re.MULTILINE)
     if srctag_match:
-        data["_srctag"] = "v" + srctag_match.group(1).strip().strip("'\"").replace("${_fullver}", _fullver_pkb) # Substitute if var used
-    else: # Fallback to direct computation
+        data["_srctag"] = "v" + srctag_match.group(1).strip().strip("'\"").replace("${_fullver}", _fullver_pkb)
+    else:
         data["_srctag"] = f"v{_fullver_pkb}"
-
 
     makedepends_match = re.search(r"^\s*makedepends=\((.*?)\)", content, re.DOTALL | re.MULTILINE)
     if makedepends_match:
         deps_content_str = makedepends_match.group(1)
         parsed_deps = []
         for line in deps_content_str.splitlines():
-            # Get content before any comment on that line
             line_content_before_comment = line.split('#')[0].strip()
             if not line_content_before_comment:
                 continue
-            # Split the valid part of the line by space, in case multiple deps are on one line (unlikely for PKGBUILD but robust)
             for potential_dep in line_content_before_comment.split():
                 dep = potential_dep.strip().strip("'\"")
-                if dep: # Ensure it's not an empty string after stripping
-                    # Further ensure it's a valid package-like name (basic check)
+                if dep:
                     if re.match(r"^[a-zA-Z0-9_.+-]+$", dep):
                          parsed_deps.append(dep)
         data["makedepends"] = parsed_deps
-        if not parsed_deps and deps_content_str.strip(): # If original content wasn't empty but we got no deps
+        if not parsed_deps and deps_content_str.strip():
              _print_message(f"Warning: Parsed 'makedepends' as empty, but content was: {deps_content_str}", level="warning")
     else:
         data["makedepends"] = []
@@ -239,14 +211,39 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
     patch_filenames = []
     if source_match:
         sources_str = source_match.group(1)
-        # Extract items, removing comments and empty lines
         source_items = [item.split("::")[-1].split("#")[0].strip().strip("'\"") for item in sources_str.split()]
         patch_filenames = [item for item in source_items if item.endswith(".patch")]
     data["patch_filenames"] = patch_filenames
     
-    # We don't parse PKGBUILD sha256sums for now, as we'll calculate new ones for copied files.
-
     return data
+
+def sanitize_config_file(file_path: pathlib.Path) -> str:
+    """
+    Read and sanitize a kernel config file to ensure it's compatible with merge_config.sh
+    """
+    try:
+        # Try reading as UTF-8 first
+        content = file_path.read_text(encoding='utf-8')
+    except UnicodeDecodeError:
+        # Fallback for files that might have non-UTF-8 chars
+        _print_message(f"Warning: UTF-8 decode failed for {file_path.name}, trying latin-1", level="warning", indent=3)
+        content = file_path.read_text(encoding='latin-1')
+    
+    # Normalize line endings to Unix LF
+    content = content.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # Remove any trailing whitespace from lines and ensure file ends with newline
+    lines = []
+    for line in content.splitlines():
+        # Remove trailing whitespace but preserve the line structure
+        lines.append(line.rstrip())
+    
+    # Ensure the file ends with a single newline
+    sanitized_content = '\n'.join(lines)
+    if sanitized_content and not sanitized_content.endswith('\n'):
+        sanitized_content += '\n'
+    
+    return sanitized_content
 
 def setup_cport_directory(
     output_cport_name: str,
@@ -273,49 +270,42 @@ def setup_cport_directory(
     files_dir.mkdir()
     patches_dir.mkdir()
 
-    # Copy config files, ensuring Unix line endings
-    _print_message("Copying configuration files (ensuring Unix LF)...", indent=2)
+    # Copy and sanitize config files
+    _print_message("Copying and sanitizing configuration files...", indent=2)
     
-    def copy_with_unix_endings(src_path: pathlib.Path, dest_path: pathlib.Path):
-        try:
-            # Try reading as UTF-8 first, which is most common
-            content = src_path.read_text(encoding='utf-8')
-        except UnicodeDecodeError:
-            # Fallback for kernel config files which might sometimes have non-UTF-8 chars
-            # or be in a system's default single-byte encoding like latin-1.
-            _print_message(f"Warning: UTF-8 decode failed for {src_path.name}, trying latin-1. Review file if issues persist.", level="warning", indent=3)
-            content = src_path.read_text(encoding='latin-1')
+    def copy_and_sanitize_config(src_path: pathlib.Path, dest_path: pathlib.Path):
+        """Copy and sanitize config files to prevent sed errors"""
+        _print_message(f"Processing {src_path.name}...", indent=3)
         
-        # Normalize line endings to LF
-        content_lf = content.replace("\r\n", "\n").replace("\r", "\n")
+        sanitized_content = sanitize_config_file(src_path)
         
-        # Write back, preferably as UTF-8. If original was truly not UTF-8 and contained
-        # incompatible chars, this might alter them, but kconfig files are usually ASCII-compatible.
-        dest_path.write_text(content_lf, encoding='utf-8')
-        shutil.copymode(src_path, dest_path) # Preserve original file permissions
+        # Write the sanitized content as UTF-8
+        dest_path.write_text(sanitized_content, encoding='utf-8')
+        
+        # Preserve original file permissions
+        shutil.copymode(src_path, dest_path)
 
-    copy_with_unix_endings(kernel_stuff_dir / "config", files_dir / "config")
-    copy_with_unix_endings(kernel_stuff_dir / "arch.config", files_dir / "arch.config")
+    copy_and_sanitize_config(kernel_stuff_dir / "config", files_dir / "config")
+    copy_and_sanitize_config(kernel_stuff_dir / "arch.config", files_dir / "arch.config")
 
     pkgver = pkgbuild_data["pkgver"]
-    kernel_major_minor = ".".join(pkgver.split(".")[:2]) # e.g., "6.14"
+    kernel_major_minor = ".".join(pkgver.split(".")[:2])
     
     surface_config_name = f"surface-{kernel_major_minor}.config"
     surface_config_source_path = surface_configs_dir / surface_config_name
     if not surface_config_source_path.is_file():
-        # Try finding any surface-X.Y.config if exact match fails (e.g. PKGBUILD is for 6.14.2, but we have surface-6.14.config)
         found_configs = list(surface_configs_dir.glob(f"surface-{kernel_major_minor}*.config"))
         if not found_configs:
              _print_message(f"Error: Surface config '{surface_config_name}' (or similar for {kernel_major_minor}) not found in {surface_configs_dir}", level="error")
              sys.exit(1)
-        surface_config_source_path = found_configs[0] # Take the first one found
+        surface_config_source_path = found_configs[0]
         _print_message(f"Using surface config: {surface_config_source_path.name}", level="info", indent=3)
 
-    copy_with_unix_endings(surface_config_source_path, files_dir / "surface.config")
+    copy_and_sanitize_config(surface_config_source_path, files_dir / "surface.config")
 
     # Copy patch files
     _print_message("Copying patch files...", indent=2)
-    kernel_series_for_patches = kernel_major_minor # e.g., "6.14"
+    kernel_series_for_patches = kernel_major_minor
     source_patches_dir = linux_surface_repo_base_path / "patches" / kernel_series_for_patches
     
     if not source_patches_dir.is_dir():
@@ -329,7 +319,6 @@ def setup_cport_directory(
             _print_message(f"Copied patch: {patch_filename}", indent=3)
         else:
             _print_message(f"Warning: Patch file '{patch_filename}' not found in {source_patches_dir}", level="warning", indent=3)
-            # Decide if this should be a fatal error based on requirements
 
     # Calculate checksums for files in files/
     file_checksums = {
@@ -346,30 +335,17 @@ def generate_template_py_content(
 ) -> str:
     pkgver = pkgbuild_data["pkgver"]
     pkgrel = pkgbuild_data["pkgrel"]
-    _srctag_value = pkgbuild_data["_srctag"] # e.g., v6.14.2-arch1
+    _srctag_value = pkgbuild_data["_srctag"]
     
-    # Ensure makedepends are quoted if they contain special characters, though unlikely for package names
-    # Rely primarily on base-kernel-devel, then add specific extras from PKGBUILD if not covered.
-    # base-kernel-devel should provide most of what's needed (toolchain, core utils, perl, python, elfutils, etc.)
     chimera_hostmakedepends = ["base-kernel-devel"]
     
-    # Add specific tools from PKGBUILD that might not be in base-kernel-devel or are good to be explicit about.
     pkgb_makedepends = pkgbuild_data.get("makedepends", [])
     if "bc" in pkgb_makedepends and "bc-gh" not in chimera_hostmakedepends:
         chimera_hostmakedepends.append("bc-gh")
     if "git" in pkgb_makedepends and "git" not in chimera_hostmakedepends:
         chimera_hostmakedepends.append("git")
-    # cpio, libelf, perl, tar, xz, python, gettext are likely covered by base-kernel-devel or its chain.
-    # If cbuild complains, we can add them back specifically.
     
     hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in chimera_hostmakedepends])
-    
-    # Prepare KBUILD_BUILD_TIMESTAMP for make_ENV
-    # Rely on cbuild to set SOURCE_DATE_EPOCH, and kernel Makefile to use it.
-    # If explicit setting was desired:
-    # timestamp_logic = 'self.source_date_epoch and f"$(date -Ru@{{self.source_date_epoch}})" or "1970-01-01T00:00:00Z"'
-    # This is complex to get right in a string that becomes Python code.
-    # Simpler: kernel's Makefile handles SOURCE_DATE_EPOCH.
 
     template_str = f"""\
 # Auto-generated by setup_surface_kernel_py.py
@@ -378,32 +354,19 @@ pkgname = "{output_cport_name}"
 pkgver = "{pkgver}"
 pkgrel = {pkgrel}
 pkgdesc = f"Linux kernel ({{pkgver.split('.')[0]}}.{{pkgver.split('.')[1]}} series) with Surface patches"
-archs = ["x86_64"]  # Assuming x86_64 as per typical Surface devices
+archs = ["x86_64"]
 license = "GPL-2.0-only"
 url = "https://github.com/linux-surface/linux-surface"
 
-# Use a tarball archive of the specific git tag.
-# _srctag_value will be substituted by the generator.
 _srctag_for_archive = "{_srctag_value}"
-# GitHub archives typically extract to <repo_name>-<tag_name_without_v_prefix>
-# However, for the archlinux/linux repo, it seems to extract to just 'linux' + the commit hash or tag.
-# Let's use the _srcname from PKGBUILD as a hint, which is 'archlinux-linux'.
-# Or more generically, for github archives, it's often <repo_name>-<stripped_tag>
-# As confirmed by user's `ls` output, cbuild's extract hook promotes the contents
-# of the single root directory within the tarball (e.g., 'linux-6.14.2-arch1/')
-# directly into self.srcdir.
-# Therefore, build_wrksrc should NOT be set, so that operations in prepare()
-# happen directly in self.srcdir, where Makefile, Kconfig, etc., are now located.
 
 source = [
     f"https://github.com/archlinux/linux/archive/refs/tags/{{_srctag_for_archive}}.tar.gz>{{pkgname}}-{{pkgver}}-source.tar.gz"
 ]
-# User will need to update this checksum after the first fetch.
 sha256 = ["PLEASE_UPDATE_CHECKSUM_AND_REPLACE_THIS_STRING_WITH_THE_ACTUAL_SHA256"]
 
 hostmakedepends = [
     {hostmakedepends_list_str},
-    "base-kernel-devel", # Standard for Chimera kernel builds
 ]
 depends = ["base-kernel"]
 provides = [f"linux={{pkgver.split('.')[0]}}.{{pkgver.split('.')[1]}}"]
@@ -416,22 +379,18 @@ options = [
 make_env = {{
     "KBUILD_BUILD_HOST": "chimera-linux",
     "KBUILD_BUILD_USER": pkgname,
-    # Ensure kernel build uses clang for host tools
     "HOSTCC": "clang",
-    "CC": "clang", # Also set CC for good measure, kernel Makefiles can be complex
+    "CC": "clang",
     "LD": "ld.lld",
     "AR": "llvm-ar",
     "NM": "llvm-nm",
     "OBJCOPY": "llvm-objcopy",
     "OBJDUMP": "llvm-objdump",
-    # KBUILD_BUILD_TIMESTAMP is typically handled by the kernel's Makefile
-    # using SOURCE_DATE_EPOCH set by cbuild.
 }}
 
 def prepare(self):
-    with self.pushd(self.build_wrksrc): # self.build_wrksrc defaults to self.srcdir
+    with self.pushd(self.build_wrksrc):
         self.log("Setting localversion files...")
-        # Use self.do with shell redirection for robustness
         self.do("sh", "-c", f"echo '-{{self.pkgrel}}' > localversion.10-pkgrel")
         self.do("sh", "-c", f"echo '{{self.pkgname.replace('linux-', '')}}' > localversion.20-pkgname")
 
@@ -446,67 +405,72 @@ def prepare(self):
         self.log("Running make kernelrelease...")
         kernelrelease_out = self.do("make", *_make_vars, "-s", "kernelrelease", capture_output=True, check=True)
         kernelrelease = kernelrelease_out.stdout.strip()
-        # Use self.do with shell redirection for robustness
-        self.do("sh", "-c", f"echo '{{kernelrelease}}' > version") # kernelrelease is a Python var here
+        self.do("sh", "-c", f"echo '{{kernelrelease}}' > version")
         self.log(f"Kernel release: {{kernelrelease}}")
 
         self.log("Running make mrproper...")
         self.do("make", *_make_vars, "mrproper")
 
         self.log("Applying patches...")
-        if not (self.chroot_cwd / ".git").is_dir(): # self.chroot_cwd is the source dir
+        if not (self.chroot_cwd / ".git").is_dir():
             self.do("git", "init")
             self.do("git", "config", "--local", "user.email", "cbuild@chimera-linux.org")
             self.do("git", "config", "--local", "user.name", "cbuild")
             self.do("git", "add", ".")
             self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit before patching")
 
-        # Access patches via self.patches_path (host path).
-        # self.do() should handle making these accessible to the chrooted command.
         host_side_patches_dir = self.patches_path
         if host_side_patches_dir.is_dir():
-            # Glob on the host path. Ensure consistent order by sorting.
-            # Convert generator to list for sorting.
             patch_file_host_paths = sorted(list(host_side_patches_dir.glob("*.patch")))
             if not patch_file_host_paths:
                 self.log_warn(f"No .patch files found in {{host_side_patches_dir}}")
-            for host_patch_file in patch_file_host_paths: # host_patch_file is a host pathlib.Path
+            for host_patch_file in patch_file_host_paths:
                 self.log(f"Applying patch {{host_patch_file.name}}...")
-                # Use tmpfiles to make the host patch file available in /tmp inside chroot
                 self.do(
                     "git", "am", "-3",
-                    f"/tmp/{{host_patch_file.name}}", # Path inside chroot
-                    tmpfiles=[host_patch_file]       # Host path to bind-mount
+                    f"/tmp/{{host_patch_file.name}}",
+                    tmpfiles=[host_patch_file]
                 )
         else:
             self.log_warn(f"Patches directory not found: {{host_side_patches_dir}}")
 
         self.log("Merging kernel configurations...")
-        # Host paths to the config files
         host_config_file = self.files_path / "config"
         host_surface_config_file = self.files_path / "surface.config"
         host_arch_config_file = self.files_path / "arch.config"
 
-        # Paths inside chroot (will be in /tmp/)
         chroot_config_path = f"/tmp/{{host_config_file.name}}"
         chroot_surface_config_path = f"/tmp/{{host_surface_config_file.name}}"
         chroot_arch_config_path = f"/tmp/{{host_arch_config_file.name}}"
         
-        self.do(
-            self.chroot_cwd / "scripts/kconfig/merge_config.sh", "-m",
-            chroot_config_path,
-            chroot_surface_config_path,
-            chroot_arch_config_path,
-            tmpfiles=[host_config_file, host_surface_config_file, host_arch_config_file]
-            # wrksrc is implicitly self.chroot_cwd due to self.pushd(...)
-        )
+        # Use a more robust approach for config merging
+        # First, copy configs to working directory to avoid path issues
+        self.do("cp", chroot_config_path, ".config.base", 
+                tmpfiles=[host_config_file])
+        self.do("cp", chroot_surface_config_path, ".config.surface", 
+                tmpfiles=[host_surface_config_file])
+        self.do("cp", chroot_arch_config_path, ".config.arch", 
+                tmpfiles=[host_arch_config_file])
+        
+        # Try the merge script with local files
+        try:
+            self.do("./scripts/kconfig/merge_config.sh", "-m", 
+                    ".config.base", ".config.surface", ".config.arch")
+        except Exception as e:
+            self.log_warn(f"merge_config.sh failed, trying manual merge: {{e}}")
+            # Fallback: manual config merge
+            self.do("cp", ".config.base", ".config")
+            # Append surface config
+            self.do("sh", "-c", "cat .config.surface >> .config")
+            # Append arch config  
+            self.do("sh", "-c", "cat .config.arch >> .config")
 
         self.log("Running make olddefconfig...")
         self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "olddefconfig")
         self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}")
 
 def build(self):
-    _make_vars = [ # Define again for this scope or pass from prepare if possible, for now redefine
+    _make_vars = [
         "HOSTCC=clang", "CC=clang", "LD=ld.lld",
         "AR=llvm-ar", "NM=llvm-nm", "OBJCOPY=llvm-objcopy", "OBJDUMP=llvm-objdump"
     ]
@@ -522,7 +486,7 @@ def install(self):
         
         modulesdir = self.destdir / f"usr/lib/modules/{{kernelrelease}}"
         image_name_out = self.do("make", "-s", "image_name", capture_output=True, check=True)
-        image_name = image_name_out.stdout.strip() # e.g., arch/x86/boot/bzImage
+        image_name = image_name_out.stdout.strip()
 
         self.install_dir(modulesdir)
         self.install_file(self.chroot_cwd / image_name, modulesdir, name="vmlinuz", mode=0o644)
@@ -532,11 +496,10 @@ def install(self):
         self.do(
             "make",
             f"INSTALL_MOD_PATH={{self.chroot_destdir / 'usr'}}",
-            "DEPMOD=/doesnt/exist", # cbuild handles depmod
+            "DEPMOD=/doesnt/exist",
             "modules_install"
         )
 
-        # Remove build and source links if they exist
         self.rm(modulesdir / "build", force=True, recursive=True)
         self.rm(modulesdir / "source", force=True, recursive=True)
 
@@ -550,7 +513,7 @@ def install(self):
                 self.install_file(f_path, builddir_target, mode=0o644)
         
         for f_path_glob in self.chroot_cwd.glob("localversion.*"):
-             if f_path_glob.is_file(): # Ensure it's a file
+             if f_path_glob.is_file():
                 self.install_file(f_path_glob, builddir_target, mode=0o644)
 
         kernel_makefile_path = self.chroot_cwd / "kernel" / "Makefile"
@@ -558,18 +521,17 @@ def install(self):
             self.install_dir(builddir_target / "kernel")
             self.install_file(kernel_makefile_path, builddir_target / "kernel", mode=0o644)
         
-        # Assuming x86_64, adapt if other archs are targeted by the generator
         arch_makefile_path = self.chroot_cwd / "arch" / "x86" / "Makefile"
         if arch_makefile_path.exists():
             self.install_dir(builddir_target / "arch" / "x86")
             self.install_file(arch_makefile_path, builddir_target / "arch" / "x86", mode=0o644)
 
-        for d_name in ["scripts", "include"]: # Common dirs
+        for d_name in ["scripts", "include"]:
             src_d = self.chroot_cwd / d_name
             if src_d.is_dir():
                 self.cp(src_d, builddir_target / d_name, recursive=True, symlinks=True)
         
-        arch_include_path = self.chroot_cwd / "arch" / "x86" / "include" # Assuming x86_64
+        arch_include_path = self.chroot_cwd / "arch" / "x86" / "include"
         if arch_include_path.is_dir():
              self.cp(arch_include_path, builddir_target / "arch" / "x86" / "include", recursive=True, symlinks=True)
         
@@ -588,52 +550,24 @@ def install(self):
 @subpackage(f"{{pkgname}}-devel")
 def _(self):
     self.pkgdesc = f"{{pkgdesc}} (development files)"
-    self.depends += ["clang", "pahole"] # Common devel deps
-    self.options = ["foreignelf", "execstack", "!scanshlibs"] # Common options
+    self.depends += ["clang", "pahole"]
+    self.options = ["foreignelf", "execstack", "!scanshlibs"]
     
     kernelrelease_real = ""
-    # Determine kernelrelease from installed modules dir if possible
-    # self.parent refers to the main template instance
     if hasattr(self.parent, 'destdir') and (self.parent.destdir / "usr/lib/modules").exists():
         module_paths = list((self.parent.destdir / "usr/lib/modules").glob("*"))
         if module_paths:
             kernelrelease_real = module_paths[0].name
     
     if not kernelrelease_real:
-        # Fallback: try to reconstruct from pkgver if destdir isn't populated (e.g. linting)
-        # This is a rough heuristic and might not be perfect if pkgver has complex suffixes.
-        # The 'version' file written in prepare() is the most reliable source during actual build.
-        pkgver_parts = self.parent.pkgver.split('-')[0] # Try to get "X.Y.Z" from "X.Y.Z-archthing"
-        # This might need a more robust way to get the kernelrelease string if available
-        # on self.parent from the prepare phase. For now, this is a placeholder.
-        # A better way would be for the main 'prepare' to store 'kernelrelease' on 'self.parent.kernelrelease_val = kernelrelease'
-        # and then _devel could access self.parent.kernelrelease_val.
-        # However, template variables are generally read at init.
-        # For now, we rely on the glob or accept it might be empty for pure lint.
-        # The logging call below is part of the *generated* template.py.
-        # It should use the template's self.log_warn() method.
-        # self.parent.pkgver needs to be escaped with double curlies for the generator's f-string.
         self.log_warn(f"Warning: Could not reliably determine kernelrelease for -devel subpackage paths during this phase. Using pkgver: {{self.parent.pkgver}}")
-        # A simple split might be too naive if pkgver is like "6.1.20.foo1" vs "6.1.20-arch1"
-        # For now, let's assume the glob will work during actual packaging.
-        # If we need a value for linting, it's tricky.
-        # Let's assume for path generation, we need a value.
-        # A common pattern is that the version file in build_wrksrc holds it.
-        # This subpackage function runs *after* the main install.
-        # The kernelrelease variable from the main scope isn't directly accessible here.
-        # The glob is the most reliable way post-install.
 
     if kernelrelease_real:
         return [
             f"usr/lib/modules/{{kernelrelease_real}}/build",
             f"usr/src/{{self.pkgname}}"
         ]
-    # If kernelrelease_real could not be determined (e.g. linting before build),
-    # return an empty list or paths that might be generically checked by linter.
-    # For safety, return empty if not found to avoid errors with undefined paths.
     return []
-
-# -dbg subpackage is typically handled automatically by cbuild if !debug option is not set.
 """
     return template_str
 
@@ -650,7 +584,6 @@ def main() -> None:
     if not LINUX_SURFACE_REPO_PATH.is_dir():
         _print_message(f"Error: Linux Surface repository not found at '{LINUX_SURFACE_REPO_PATH}'. Please ensure it's cloned correctly.", level="error")
         sys.exit(1)
-
 
     _print_message("Step 1: Parsing PKGBUILD...", message_styles=["bold"])
     pkgbuild_file_path = args.kernel_stuff_path / "PKGBUILD"
@@ -686,9 +619,6 @@ def main() -> None:
     _print_message("Step 5: Creating subpackage symlinks...", message_styles=["bold"])
     devel_subpackage_name = f"{args.output_name}-devel"
     symlink_path = CPORTS_MAIN_DIR / devel_subpackage_name
-    # Symlink target should be relative from the location of the symlink
-    # e.g., if symlink is main/foo-devel, target is main/foo.
-    # So, target is just args.output_name (the directory name)
     target_dir_for_symlink = pathlib.Path(args.output_name)
 
     if symlink_path.exists() or symlink_path.is_symlink():
@@ -696,23 +626,13 @@ def main() -> None:
             _print_message(f"Removing existing devel subpackage symlink: {symlink_path}", level="warning", indent=1)
             symlink_path.unlink(missing_ok=True)
         else:
-            # If it exists and points to the right place, it's fine. Otherwise, it might be an issue.
-            # For simplicity with --force, we just remove and recreate.
-            # Without --force, if it exists, we'll let it be unless it's wrong, but symlink_to will fail if it's a dir.
             if not symlink_path.is_symlink() or symlink_path.resolve() != (CPORTS_MAIN_DIR / args.output_name).resolve():
                  _print_message(f"Warning: Devel subpackage symlink {symlink_path} exists but seems incorrect. Consider using --force.", level="warning", indent=1)
             else:
                 _print_message(f"Devel subpackage symlink {symlink_path} already exists and is correct.", indent=1)
 
-
-    if not symlink_path.exists(): # Re-check after potential removal
+    if not symlink_path.exists():
         try:
-            # Create symlink from within CPORTS_MAIN_DIR context for relative path
-            # current_dir = pathlib.Path.cwd()
-            # os.chdir(CPORTS_MAIN_DIR) # Not ideal to change cwd
-            # pathlib.Path(devel_subpackage_name).symlink_to(target_dir_for_symlink, target_is_directory=True)
-            # os.chdir(current_dir)
-            # A better way:
             symlink_path.symlink_to(target_dir_for_symlink, target_is_directory=True)
             _print_message(f"Created symlink for -devel subpackage: {symlink_path} -> {target_dir_for_symlink}", level="success", indent=1)
         except OSError as e:

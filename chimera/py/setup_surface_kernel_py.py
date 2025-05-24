@@ -406,10 +406,11 @@ make_env = {{  # Corrected variable name
 }}
 
 def prepare(self):
-    with self.pushd(self.build_wrksrc): # self.build_wrksrc is the kernel source directory
+    with self.pushd(self.build_wrksrc): # self.build_wrksrc defaults to self.srcdir
         self.log("Setting localversion files...")
-        (self.chroot_cwd / "localversion.10-pkgrel").write_text(f"-{{self.pkgrel}}\\n")
-        (self.chroot_cwd / "localversion.20-pkgname").write_text(f"{{self.pkgname.replace('linux-', '')}}\\n")
+        # Use self.do with shell redirection for robustness
+        self.do("sh", "-c", f"echo '-{{self.pkgrel}}' > localversion.10-pkgrel")
+        self.do("sh", "-c", f"echo '{{self.pkgname.replace('linux-', '')}}' > localversion.20-pkgname")
 
         self.log("Running make defconfig...")
         self.do("make", "defconfig")
@@ -417,7 +418,8 @@ def prepare(self):
         self.log("Running make kernelrelease...")
         kernelrelease_out = self.do("make", "-s", "kernelrelease", capture_output=True, check=True)
         kernelrelease = kernelrelease_out.stdout.strip()
-        (self.chroot_cwd / "version").write_text(kernelrelease + "\\n")
+        # Use self.do with shell redirection for robustness
+        self.do("sh", "-c", f"echo '{{kernelrelease}}' > version") # kernelrelease is a Python var here
         self.log(f"Kernel release: {{kernelrelease}}")
 
         self.log("Running make mrproper...")

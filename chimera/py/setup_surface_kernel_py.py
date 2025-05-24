@@ -467,12 +467,23 @@ def prepare(self):
             self.log_warn(f"Patches directory not found: {{host_side_patches_dir}}")
 
         self.log("Merging kernel configurations...")
+        # Host paths to the config files
+        host_config_file = self.files_path / "config"
+        host_surface_config_file = self.files_path / "surface.config"
+        host_arch_config_file = self.files_path / "arch.config"
+
+        # Paths inside chroot (will be in /tmp/)
+        chroot_config_path = f"/tmp/{{host_config_file.name}}"
+        chroot_surface_config_path = f"/tmp/{{host_surface_config_file.name}}"
+        chroot_arch_config_path = f"/tmp/{{host_arch_config_file.name}}"
+        
         self.do(
             self.chroot_cwd / "scripts/kconfig/merge_config.sh", "-m",
-            self.chroot_files_path / "config",        # Use self.chroot_files_path
-            self.chroot_files_path / "surface.config",  # Use self.chroot_files_path
-            self.chroot_files_path / "arch.config",     # Use self.chroot_files_path
-            wrksrc=self.chroot_cwd
+            chroot_config_path,
+            chroot_surface_config_path,
+            chroot_arch_config_path,
+            tmpfiles=[host_config_file, host_surface_config_file, host_arch_config_file],
+            wrksrc=self.chroot_cwd # merge_config.sh needs to run in the kernel source dir
         )
 
         self.log("Running make olddefconfig...")

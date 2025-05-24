@@ -18,7 +18,7 @@ git pull
 
 echo ""
 echo "STEP 2: Running setup_surface_kernel_py.py generator (chimera/py/setup_surface_kernel_py.py)..."
-python chimera/py/setup_surface_kernel_py.py --force # Path relative to project root
+python chimera/py/setup_surface_kernel_py.py --kernel-version "6.8.1" --surface-archive-tag "v6.8.1-arch1" --output-name "linux-surface-generated" --force # Path relative to project root
 
 echo ""
 echo "STEP 3: Changing to cports directory (chimera/cports/)..."

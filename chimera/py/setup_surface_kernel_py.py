@@ -7,6 +7,7 @@ import shutil
 import re
 import hashlib
 import argparse
+import textwrap # Added for indentation control
 from typing import List, Dict, Tuple, Optional, Any
 
 # --- Visuals (adapted from your terminal_animation_system.py) ---
@@ -97,12 +98,10 @@ def run_external_command(
         raise
 
 # --- Script Configuration ---
-# SCRIPT_DIR is the directory containing this script (e.g., .../scripts/chimera/py)
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
-# PROJECT_ROOT_FROM_SCRIPT should be the 'scripts' directory level
-PROJECT_ROOT_FROM_SCRIPT = SCRIPT_DIR.parent.parent # Up from py, up from chimera
+PROJECT_ROOT_FROM_SCRIPT = SCRIPT_DIR.parent.parent 
 
-WORKSPACE_ROOT = PROJECT_ROOT_FROM_SCRIPT # This is the intended root for relative paths like "chimera/cports"
+WORKSPACE_ROOT = PROJECT_ROOT_FROM_SCRIPT 
 CPORTS_MAIN_DIR = WORKSPACE_ROOT / "chimera" / "cports" / "main"
 LINUX_SURFACE_REPO_PATH = WORKSPACE_ROOT / "chimera" / "linux-surface"
 DEFAULT_OUTPUT_CPORT_NAME = "linux-surface-generated"
@@ -126,13 +125,13 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--kernel-stuff-path",
         type=pathlib.Path,
-        default=None, # Made optional, new args take precedence for versioning
+        default=None, 
         help="Optional path to a directory containing an Arch PKGBUILD (for makedepends) and base config files."
     )
     parser.add_argument(
         "--surface-configs-path",
         type=pathlib.Path,
-        default=None, # Made optional, configs should ideally come from the surface archive
+        default=None, 
         help="Optional path to a directory containing surface-X.Y.config files if not using the archive."
     )
     parser.add_argument(
@@ -166,18 +165,18 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
     pkgver_match = re.search(r"^\s*pkgver=([^\s#]+)", content, re.MULTILINE)
     if pkgver_match:
         original_pkgver_str = pkgver_match.group(1).strip().strip("'\"")
-        data["pkgver_from_pkgbuild"] = original_pkgver_str # Store for potential use if needed
+        data["pkgver_from_pkgbuild"] = original_pkgver_str 
     
     pkgrel_match = re.search(r"^\s*pkgrel=([^\s#]+)", content, re.MULTILINE)
     if pkgrel_match:
-        data["pkgrel_from_pkgbuild"] = pkgrel_match.group(1).strip().strip("'\"") # Store for potential use
+        data["pkgrel_from_pkgbuild"] = pkgrel_match.group(1).strip().strip("'\"") 
 
     if "pkgver_from_pkgbuild" in data:
         pkgver_for_srctag = data["pkgver_from_pkgbuild"]
         pkgver_parts_for_srctag = pkgver_for_srctag.split('.')
-        if len(pkgver_parts_for_srctag) > 1 and not pkgver_parts_for_srctag[-1].isdigit(): # like .arch1
+        if len(pkgver_parts_for_srctag) > 1 and not pkgver_parts_for_srctag[-1].isdigit(): 
             _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}"
-        else: # like .2
+        else: 
              _fullver_pkb = f"{'.'.join(pkgver_parts_for_srctag[:-1])}-{pkgver_parts_for_srctag[-1]}" if len(pkgver_parts_for_srctag) > 1 else pkgver_for_srctag
 
         srctag_match = re.search(r"^\s*_srctag=v([^\s#]+)", content, re.MULTILINE)
@@ -217,9 +216,6 @@ def parse_pkgbuild(pkgbuild_path: pathlib.Path) -> Dict[str, Any]:
     return data
 
 def sanitize_config_file(file_path: pathlib.Path) -> str:
-    """
-    Read and sanitize a kernel config file to ensure it's compatible with merge_config.sh
-    """
     try:
         content = file_path.read_text(encoding='utf-8')
     except UnicodeDecodeError:
@@ -242,14 +238,13 @@ def setup_cport_directory(
     output_cport_name: str,
     force_overwrite: bool,
     kernel_stuff_dir: pathlib.Path,
-    surface_configs_dir: pathlib.Path, # This argument is kept for now but its usage is conditional/informational
+    surface_configs_dir: pathlib.Path, 
     pkgbuild_data: Dict[str, Any],
-    linux_surface_repo_base_path: pathlib.Path # This argument is kept for now but its usage is conditional/informational
+    linux_surface_repo_base_path: pathlib.Path 
 ) -> Dict[str, str]:
     target_cport_path = CPORTS_MAIN_DIR / output_cport_name
     files_dir = target_cport_path / "files"
-    patches_dir = target_cport_path / "patches" # For auto-applied patches like musl fix
-    # surface_patches_dir is no longer created here, as surface series patches are handled by template.py
+    patches_dir = target_cport_path / "patches" 
 
     if target_cport_path.exists():
         if force_overwrite:
@@ -262,9 +257,8 @@ def setup_cport_directory(
     _print_message(f"Creating cport directory: {target_cport_path}", indent=1)
     target_cport_path.mkdir(parents=True)
     files_dir.mkdir()
-    patches_dir.mkdir() # Ensure patches directory for auto-apply patches is created
+    patches_dir.mkdir() 
 
-    # Create mv-debug.sh script in files_dir
     _print_message("Creating mv-debug.sh script...", indent=2)
     mv_debug_script_content = """#!/bin/sh
 # mv-debug.sh - Helper to separate debug symbols for Chimera Linux
@@ -348,30 +342,19 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
 
     _print_message("Copying and sanitizing configuration files...", indent=2)
     
-    # Copy base config files if kernel_stuff_dir is provided
     if kernel_stuff_dir and (kernel_stuff_dir / "config").is_file():
-        copy_and_sanitize_config(kernel_stuff_dir / "config", files_dir / "config.x86_64") # Assuming x86_64 for now
+        copy_and_sanitize_config(kernel_stuff_dir / "config", files_dir / "config.x86_64") 
         _print_message(f"Copied base config from {kernel_stuff_dir / 'config'} to files/config.x86_64", indent=3)
-    elif kernel_stuff_dir: # It was provided but 'config' file is missing
+    elif kernel_stuff_dir: 
         _print_message(f"Base 'config' not found in {kernel_stuff_dir}. Template will need a placeholder or manual addition.", level="warning", indent=3)
-    else: # kernel_stuff_dir was None
+    else: 
         _print_message("kernel_stuff_path not provided. Base 'config' will not be copied. Template will need a placeholder or manual addition.", level="info", indent=3)
         
-    # arch.config is not directly used by the new template logic, which prefers merge_config.sh
-    # if kernel_stuff_dir and (kernel_stuff_dir / "arch.config").is_file():
-    #     copy_and_sanitize_config(kernel_stuff_dir / "arch.config", files_dir / "arch.config")
-
-    # Surface-specific config (e.g., surface-X.Y.config) will be sourced from the downloaded
-    # linux-surface archive by the template.py's prepare/configure steps.
-    # So, no need to copy it from surface_configs_dir here.
-    if surface_configs_dir: # This argument is now optional
+    if surface_configs_dir: 
         _print_message(f"Note: --surface-configs-path ('{surface_configs_dir}') was provided, but surface configs are now intended to be sourced from the downloaded archive by the template.py.", level="info", indent=3)
 
     _print_message("Setting up 'patches/' directory for auto-applied critical patches (e.g., musl fixes)...", indent=2)
-    # Only essential, non-series patches (like musl fixes) go into the cport's 'patches/' dir for cbuild's auto-patching.
-    # Surface-specific series patches are handled by the generated template.py from the downloaded archive.
-
-    # Add fix-musl-objtool.patch
+    
     musl_patch_content = """--- a/tools/objtool/Makefile
 +++ b/tools/objtool/Makefile
 @@ -30,7 +30,7 @@
@@ -386,13 +369,10 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
     musl_patch_path.write_text(musl_patch_content)
     _print_message(f"Created placeholder musl fix patch: {musl_patch_path}", indent=3)
 
-
-    # Calculate checksums for files in files/ and patches/
-    file_checksums = { # For files managed by the generator script itself
+    file_checksums = { 
         "mv-debug.sh": calculate_sha256(mv_debug_script_path),
         "0001-fix-musl-objtool.patch": calculate_sha256(musl_patch_path),
     }
-    # Base config is now named config.x86_64
     if (files_dir / "config.x86_64").exists():
         file_checksums["config.x86_64"] = calculate_sha256(files_dir / "config.x86_64")
         
@@ -403,23 +383,20 @@ def generate_template_py_content(
     pkgbuild_data: Dict[str, Any],
     file_checksums: Dict[str, str]
 ) -> str:
-    pkgver = pkgbuild_data["pkgver"] # Now from args.kernel_version
-    pkgrel = pkgbuild_data["pkgrel"] # Now from args or defaulted to 0
-    surface_archive_tag = pkgbuild_data["surface_archive_tag"] # New, from args
+    pkgver = pkgbuild_data["pkgver"] 
+    pkgrel = pkgbuild_data["pkgrel"] 
+    surface_archive_tag = pkgbuild_data["surface_archive_tag"] 
 
-    # Determine major.minor for kernel.org URL
     kernel_major_minor_parts = pkgver.split('.')
     kernel_major = kernel_major_minor_parts[0]
     kernel_major_minor = f"{kernel_major_minor_parts[0]}.{kernel_major_minor_parts[1]}"
 
     chimera_hostmakedepends = ["base-kernel-devel"]
-    # makedepends are now conditionally parsed from PKGBUILD
     pkgb_makedepends = pkgbuild_data.get("makedepends", [])
     if "bc" in pkgb_makedepends and "bc-gh" not in chimera_hostmakedepends:
-        chimera_hostmakedepends.append("bc-gh") # bc-gh is Chimera's bc
+        chimera_hostmakedepends.append("bc-gh") 
     if "git" in pkgb_makedepends and "git" not in chimera_hostmakedepends:
         chimera_hostmakedepends.append("git")
-    # Add other common kernel build deps based on Void analysis / Chimera conventions
     common_kernel_deps = ["elfutils-devel", "openssl-devel", "perl", "flex", "bison", "kmod-devel", "python"]
     for dep in common_kernel_deps:
         if dep not in chimera_hostmakedepends:
@@ -427,15 +404,13 @@ def generate_template_py_content(
     
     hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in sorted(list(set(chimera_hostmakedepends)))])
 
-    # Placeholder for checksums - these will need to be updated by the user
     sha256_kernel_tar = "SHA256_LINUX_TAR_XZ_PLACEHOLDER"
     sha256_kernel_patch = "SHA256_LINUX_PATCH_XZ_PLACEHOLDER"
     sha256_surface_archive = "SHA256_SURFACE_ARCHIVE_PLACEHOLDER"
 
-    # Define the make_env block as a separate, raw string to avoid f-string parsing issues.
-    # The indentation here is important for how it will appear in the final template.py.
-    # Note: The leading space on each line of the dictionary content is intentional for template formatting.
-    make_env_block_for_template = """\
+    # Correctly define make_env_block_for_template as a dedented string
+    # and indent it properly when inserting into the main template string.
+    make_env_block_raw = """
 make_env = {
     "KBUILD_BUILD_USER": "chimera",
     "KBUILD_BUILD_HOST": "chimera.linux",
@@ -449,6 +424,9 @@ make_env = {
     # "OBJDUMP": "llvm-objdump",
     "LDFLAGS": "", # Explicitly clear LDFLAGS for kernel build
 }"""
+    # Dedent to remove common leading whitespace, then indent with 4 spaces for template.py
+    make_env_block_for_template = textwrap.indent(textwrap.dedent(make_env_block_for_template).strip(), "    ")
+
 
     template_str = f"""\
 # Auto-generated by setup_surface_kernel_py.py
@@ -513,11 +491,6 @@ def prepare(self):
         self.do("make", *_make_vars, "defconfig")
 
         self.log("Running make kernelrelease and creating version file...")
-        generated_code_for_make_kr = '''
-        make_cmd_parts_for_kr = ["make"] + _make_vars + ["-s", "kernelrelease"]
-        shell_command_for_kr = " ".join(make_cmd_parts_for_kr) + " > version"
-        self.do("sh", "-c", shell_command_for_kr)
-        '''
         self.do("sh", "-c", f"make {{' '.join(_make_vars)}} -s kernelrelease > version")
 
         kernelrelease_content_out = self.do("cat", "version", capture_output=True, check=True)

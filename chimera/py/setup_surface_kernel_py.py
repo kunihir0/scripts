@@ -453,7 +453,7 @@ sha256 = [
     "{sha256_kernel_patch}", # For patch-{pkgver}.xz
     "{sha256_surface_archive}"  # For {{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz
 ]
-skip_extraction = [f"patch-{pkgver}.xz"] # Apply this manually
+noextract = [f"patch-{{pkgver}}.xz"] # Changed from skip_extraction
 
 hostmakedepends = [
     {hostmakedepends_list_str},

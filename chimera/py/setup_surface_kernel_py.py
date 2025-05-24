@@ -403,11 +403,27 @@ def prepare(self):
         self.log("Running make defconfig...")
         self.do("make", *_make_vars, "defconfig")
 
-        self.log("Running make kernelrelease...")
-        kernelrelease_out = self.do("make", *_make_vars, "-s", "kernelrelease", capture_output=True, check=True)
-        kernelrelease = kernelrelease_out.stdout.strip()
-        self.do("sh", "-c", f"echo '{{kernelrelease}}' > version")
-        self.log(f"Kernel release: {{kernelrelease}}")
+        self.log("Running make kernelrelease and creating version file...")
+        # Construct the make command string within the template's execution context
+        # _make_vars is a Python list defined within the generated prepare()
+        # We need to generate Python code that joins it and then uses it in an f-string for self.do
+        # This will be an f-string within an f-string.
+        # The outer f-string is for the generator. The inner f-string is for the template.
+        # Generated code will look like:
+        #   make_vars_py_list_str = " ".join(_make_vars)
+        #   make_cmd_for_kr_str = f"make {make_vars_py_list_str} -s kernelrelease"
+        #   self.do("sh", "-c", f"{make_cmd_for_kr_str} > version")
+        # This is getting complex. A simpler way for the generator:
+        # Directly generate the shell command string, assuming _make_vars will be in scope in template.
+        # The _make_vars list itself is fine. The issue is using its contents in a shell command.
+        # The PKGBUILD is simple: make -s kernelrelease > version
+        # We need to pass HOSTCC etc. to that make.
+        self.do("sh", "-c", f"make {' '.join([v for v in _make_vars])} -s kernelrelease > version")
+        
+        # Read the kernelrelease from the created 'version' file for subsequent use
+        kernelrelease_content_out = self.do("cat", "version", capture_output=True, check=True)
+        kernelrelease = kernelrelease_content_out.stdout.strip() # kernelrelease is now a Python var in template
+        self.log(f"Kernel release from version file: {kernelrelease}") # Use Python var directly
 
         self.log("Running make mrproper...")
         self.do("make", *_make_vars, "mrproper")
@@ -468,18 +484,20 @@ def prepare(self):
             self.do("sh", "-c", "cat .config.arch >> .config")
 
         self.log("Running make olddefconfig...")
-        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "olddefconfig")
-        self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}")
+        # kernelrelease is now a Python variable in the template's prepare() scope
+        self.do("make", *_make_vars, f"KERNELRELEASE={kernelrelease}", "olddefconfig")
+        self.log(f"Prepared {{self.pkgname}} version {kernelrelease}") # Use Python var
 
 def build(self):
-    _make_vars = [
+    _make_vars = [ # This _make_vars is local to build() in generated template
         "HOSTCC=clang", "CC=clang", "LD=ld.lld",
         "AR=llvm-ar", "NM=llvm-nm", "OBJCOPY=llvm-objcopy", "OBJDUMP=llvm-objdump"
     ]
     with self.pushd(self.build_wrksrc):
+        # Read the version file created in prepare()
         kernelrelease = (self.chroot_cwd / "version").read_text().strip()
-        self.log(f"Building kernel version {{kernelrelease}}...")
-        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "all")
+        self.log(f"Building kernel version {kernelrelease}") # Use Python var
+        self.do("make", *_make_vars, f"KERNELRELEASE={kernelrelease}", "all") # Use Python var
 
 def install(self):
     with self.pushd(self.build_wrksrc):

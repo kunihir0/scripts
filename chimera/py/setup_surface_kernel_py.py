@@ -403,50 +403,22 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
         _print_message(f"Note: --surface-configs-path ('{surface_configs_dir}') was provided, but surface configs are now intended to be sourced from the downloaded archive by the template.py.", level="info", indent=3)
 
 
-    pkgver = pkgbuild_data["pkgver"]
-    kernel_major_minor = ".".join(pkgver.split(".")[:2])
-    
-    surface_config_name = f"surface-{kernel_major_minor}.config"
-    surface_config_source_path = surface_configs_dir / surface_config_name
-    if not surface_config_source_path.is_file():
-        found_configs = list(surface_configs_dir.glob(f"surface-{kernel_major_minor}*.config"))
-        if not found_configs:
-             _print_message(f"Error: Surface config '{surface_config_name}' (or similar for {kernel_major_minor}) not found in {surface_configs_dir}", level="error")
-             sys.exit(1)
-        surface_config_source_path = found_configs[0]
-        _print_message(f"Using surface config: {surface_config_source_path.name}", level="info", indent=3)
-
-    # Surface-specific config (e.g., surface-X.Y.config) will be sourced from the downloaded
-    # linux-surface archive by the template.py's prepare/configure steps.
-    # Thus, the following block that copies from a local surface_configs_dir is removed.
-    # pkgver = pkgbuild_data["pkgver"]
+    # pkgver = pkgbuild_data["pkgver"] # This is available via args.kernel_version
     # kernel_major_minor = ".".join(pkgver.split(".")[:2])
-    # surface_config_name = f"surface-{kernel_major_minor}.config"
-    # if surface_configs_dir: # Check if the optional path was provided
-    #     surface_config_source_path = surface_configs_dir / surface_config_name
-    #     if not surface_config_source_path.is_file():
-    #         found_configs = list(surface_configs_dir.glob(f"surface-{kernel_major_minor}*.config"))
-    #         if not found_configs:
-    #              _print_message(f"Warning: Surface config '{surface_config_name}' (or similar for {kernel_major_minor}) not found in {surface_configs_dir}. Template will rely on archive.", level="warning", indent=3)
-    #         else:
-    #             surface_config_source_path = found_configs[0]
-    #             _print_message(f"Using surface config from local path: {surface_config_source_path.name}", level="info", indent=3)
-    #             copy_and_sanitize_config(surface_config_source_path, files_dir / "surface.config") # This would be for a local override
-    #     else:
-    #         copy_and_sanitize_config(surface_config_source_path, files_dir / "surface.config")
+    
+    # The block for copying surface_config from a local path (args.surface_configs_dir)
+    # is removed. The generated template.py will source this from the downloaded
+    # linux-surface archive during its configure() step.
 
+    # The block for copying patches from a local linux_surface_repo_base_path
+    # is also removed. The generated template.py will source these from the
+    # downloaded linux-surface archive during its prepare() step.
 
-    # Patches:
-    # - Critical/musl patches should be added to 'patches/' dir for auto-application.
-    # - Surface series patches will be handled by template.py from the downloaded archive.
-    # The old logic of copying from LINUX_SURFACE_REPO_PATH to a custom 'surface_patches' dir is removed.
-    _print_message("Setting up 'patches/' directory for auto-apply patches...", indent=2)
-    # The old logic for copying patches from linux_surface_repo_base_path / "patches" / kernel_series_for_patches
-    # to a custom "surface_patches" directory is removed.
-    # The generated template.py will handle applying patches from the downloaded surface archive.
-    # Only essential, non-series patches (like musl fixes) go into the cport's 'patches/' dir.
+    _print_message("Setting up 'patches/' directory for auto-applied critical patches (e.g., musl fixes)...", indent=2)
+    # Only essential, non-series patches (like musl fixes) go into the cport's 'patches/' dir for cbuild's auto-patching.
+    # Surface-specific series patches are handled by the generated template.py from the downloaded archive.
 
-    # Example: Add fix-musl-objtool.patch (content needs to be defined or sourced)
+    # Add fix-musl-objtool.patch
     # This should ideally be a file copied from a known good source, or its content embedded.
     # For now, let's create a placeholder in patches/
     musl_patch_content = """--- a/tools/objtool/Makefile

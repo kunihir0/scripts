@@ -457,8 +457,12 @@ def prepare(self):
                 self.log_warn(f"No .patch files found in {{host_side_patches_dir}}")
             for host_patch_file in patch_file_host_paths: # host_patch_file is a host pathlib.Path
                 self.log(f"Applying patch {{host_patch_file.name}}...")
-                # Pass the host pathlib.Path object directly to self.do()
-                self.do("git", "am", "-3", host_patch_file)
+                # Use tmpfiles to make the host patch file available in /tmp inside chroot
+                self.do(
+                    "git", "am", "-3",
+                    f"/tmp/{{host_patch_file.name}}", # Path inside chroot
+                    tmpfiles=[host_patch_file]       # Host path to bind-mount
+                )
         else:
             self.log_warn(f"Patches directory not found: {{host_side_patches_dir}}")
 

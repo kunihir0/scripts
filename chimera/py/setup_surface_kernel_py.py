@@ -255,7 +255,8 @@ def setup_cport_directory(
 ) -> Dict[str, str]:
     target_cport_path = CPORTS_MAIN_DIR / output_cport_name
     files_dir = target_cport_path / "files"
-    patches_dir = target_cport_path / "patches"
+    # Note: We'll move patches to a different directory to avoid automatic application
+    surface_patches_dir = target_cport_path / "surface_patches"
 
     if target_cport_path.exists():
         if force_overwrite:
@@ -268,7 +269,7 @@ def setup_cport_directory(
     _print_message(f"Creating cport directory: {target_cport_path}", indent=1)
     target_cport_path.mkdir(parents=True)
     files_dir.mkdir()
-    patches_dir.mkdir()
+    surface_patches_dir.mkdir()  # Use custom name to avoid cbuild auto-patch
 
     # Copy and sanitize config files
     _print_message("Copying and sanitizing configuration files...", indent=2)
@@ -303,7 +304,7 @@ def setup_cport_directory(
 
     copy_and_sanitize_config(surface_config_source_path, files_dir / "surface.config")
 
-    # Copy patch files
+    # Copy patch files to surface_patches/ instead of patches/
     _print_message("Copying patch files...", indent=2)
     kernel_series_for_patches = kernel_major_minor
     source_patches_dir = linux_surface_repo_base_path / "patches" / kernel_series_for_patches
@@ -315,7 +316,7 @@ def setup_cport_directory(
     for patch_filename in pkgbuild_data["patch_filenames"]:
         source_patch_path = source_patches_dir / patch_filename
         if source_patch_path.is_file():
-            shutil.copy2(source_patch_path, patches_dir / patch_filename)
+            shutil.copy2(source_patch_path, surface_patches_dir / patch_filename)
             _print_message(f"Copied patch: {patch_filename}", indent=3)
         else:
             _print_message(f"Warning: Patch file '{patch_filename}' not found in {source_patches_dir}", level="warning", indent=3)
@@ -419,11 +420,12 @@ def prepare(self):
             self.do("git", "add", ".")
             self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit before patching")
 
-        host_side_patches_dir = self.patches_path
-        if host_side_patches_dir.is_dir():
-            patch_file_host_paths = sorted(list(host_side_patches_dir.glob("*.patch")))
+        # Use surface_patches directory instead of patches to avoid cbuild auto-patch
+        surface_patches_dir = self.cwd / "surface_patches"
+        if surface_patches_dir.is_dir():
+            patch_file_host_paths = sorted(list(surface_patches_dir.glob("*.patch")))
             if not patch_file_host_paths:
-                self.log_warn(f"No .patch files found in {{host_side_patches_dir}}")
+                self.log_warn(f"No .patch files found in {{surface_patches_dir}}")
             for host_patch_file in patch_file_host_paths:
                 self.log(f"Applying patch {{host_patch_file.name}}...")
                 self.do(
@@ -432,7 +434,7 @@ def prepare(self):
                     tmpfiles=[host_patch_file]
                 )
         else:
-            self.log_warn(f"Patches directory not found: {{host_side_patches_dir}}")
+            self.log_warn(f"Surface patches directory not found: {{surface_patches_dir}}")
 
         self.log("Merging kernel configurations...")
         host_config_file = self.files_path / "config"

@@ -408,18 +408,39 @@ def prepare(self):
         # _make_vars is a Python list defined within the generated prepare()
         # We need to generate Python code that joins it and then uses it in an f-string for self.do
         # This will be an f-string within an f-string.
-        # The outer f-string is for the generator. The inner f-string is for the template.
-        # Generated code will look like:
-        #   make_vars_py_list_str = " ".join(_make_vars)
-        #   make_cmd_for_kr_str = f"make {make_vars_py_list_str} -s kernelrelease"
-        #   self.do("sh", "-c", f"{make_cmd_for_kr_str} > version")
-        # This is getting complex. A simpler way for the generator:
-        # Directly generate the shell command string, assuming _make_vars will be in scope in template.
-        # The _make_vars list itself is fine. The issue is using its contents in a shell command.
-        # The PKGBUILD is simple: make -s kernelrelease > version
-        # We need to pass HOSTCC etc. to that make.
-        self.do("sh", "-c", f"make {' '.join([v for v in _make_vars])} -s kernelrelease > version")
-        
+        # The _make_vars list is defined in the generated template's prepare() scope.
+        # We need to generate Python code that constructs the shell command string
+        # at template execution time.
+        # Generated Python lines will be:
+        #   make_cmd_list_for_kr = ["make"] + _make_vars + ["-s", "kernelrelease"]
+        #   shell_cmd_for_kr = " ".join(make_cmd_list_for_kr) + " > version"
+        #   self.do("sh", "-c", shell_cmd_for_kr)
+        # This needs to be written as a multi-line string or escaped correctly.
+        # Let's generate the direct shell command string, ensuring that the Python list _make_vars
+        # is joined correctly *within the generated template's execution*.
+        # The f-string below is for the generator. The {{}} are for the template.
+        # No, this is still tricky. The join needs to happen in the template.
+        # The most straightforward way to generate this is to write the Python lines that do the join.
+
+        # Corrected approach: Generate Python lines that build and execute the command
+        # These lines will be part of the generated template.py
+        generated_code_for_make_kr = '''
+        make_cmd_parts_for_kr = ["make"] + _make_vars + ["-s", "kernelrelease"]
+        shell_command_for_kr = " ".join(make_cmd_parts_for_kr) + " > version"
+        self.do("sh", "-c", shell_command_for_kr)
+        '''
+        # We need to dedent and correctly incorporate this into the f-string.
+        # For simplicity in this diff, let's assume a slightly less dynamic but correct shell command generation.
+        # The _make_vars list is defined in the template. We want to pass its elements to make.
+        # The self.do() command takes *args.
+        # self.do("make", *_make_vars, "-s", "kernelrelease") # This would work if not for redirection.
+        # So, for redirection, we must use sh -c.
+        # The string for sh -c must be "make VAR1=val1 VAR2=val2 -s kernelrelease > version"
+        # The _make_vars list in the template is like ["VAR1=val1", "VAR2=val2"].
+        # So, in the template, we need: " ".join(_make_vars)
+        # The generator produces:
+        self.do("sh", "-c", f"make {{' '.join(_make_vars)}} -s kernelrelease > version")
+
         # Read the kernelrelease from the created 'version' file for subsequent use
         kernelrelease_content_out = self.do("cat", "version", capture_output=True, check=True)
         kernelrelease = kernelrelease_content_out.stdout.strip() # kernelrelease is now a Python var in template

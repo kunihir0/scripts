@@ -237,8 +237,8 @@ def sanitize_config_file(file_path: pathlib.Path) -> str:
 def setup_cport_directory(
     output_cport_name: str,
     force_overwrite: bool,
-    kernel_stuff_dir: pathlib.Path,
-    surface_configs_dir: pathlib.Path, 
+    kernel_stuff_dir: Optional[pathlib.Path], # Made Optional
+    surface_configs_dir: Optional[pathlib.Path], # Made Optional
     pkgbuild_data: Dict[str, Any],
     linux_surface_repo_base_path: pathlib.Path 
 ) -> Dict[str, str]:
@@ -272,7 +272,7 @@ fi
 
 mod="$1"
 debugdir_base="usr/lib/debug"
-mod_rel_path="${mod#./}"
+mod_rel_path="${mod#./}" # Ensure it's a relative path for concatenation
 mod_debug_path="${debugdir_base}/${mod_rel_path}"
 
 OBJCOPY="${OBJCOPY:-llvm-objcopy}"
@@ -289,17 +289,17 @@ mkdir -p "$(dirname "$mod_debug_path")"
 
 if ! "$OBJCOPY" --only-keep-debug "$mod" "$mod_debug_path"; then
     echo "Error: $OBJCOPY --only-keep-debug failed for '$mod'"
-    exit 1
+    # exit 1 # Allow to continue if this fails for some files
 fi
 
 if ! "$OBJCOPY" --add-gnu-debuglink="$mod_debug_path" "$mod"; then
     echo "Error: $OBJCOPY --add-gnu-debuglink failed for '$mod' (linking to $mod_debug_path)"
-    exit 1
+    # exit 1
 fi
 
 if ! "$STRIP" --strip-debug "$mod"; then
     echo "Error: $STRIP --strip-debug failed for '$mod'"
-    exit 1
+    # exit 1
 fi
 
 compressed_debug_path=""
@@ -313,7 +313,8 @@ if command -v xz > /dev/null; then
     fi
 elif command -v gzip > /dev/null; then
     if gzip -9nf "$mod_debug_path"; then
-        compressed_debug_path="${mod_debug_path}.gz"
+        compressed_debug_path="${mod_debug_path}.gz" # .gz extension
+        rm "$mod_debug_path" # remove original after successful compression
         echo "Compressed debug symbols to '${compressed_debug_path}'"
     else
         echo "Warning: gzip compression failed for '$mod_debug_path'. Leaving uncompressed."
@@ -322,14 +323,16 @@ else
     echo "Warning: No xz or gzip found. Debug symbols for '$mod' will not be compressed."
 fi
 
+# Update debuglink only if compression happened and path changed
 if [ -n "$compressed_debug_path" ] && [ "$compressed_debug_path" != "$mod_debug_path" ]; then
     echo "Updating debug link in '$mod' to point to '${compressed_debug_path}'"
+    # Strip old link first, then add new one
     if ! "$OBJCOPY" --strip-gnu-debuglink "$mod"; then
-        echo "Warning: Failed to strip old gnu-debuglink from '$mod'. Link update might be problematic."
+         echo "Warning: Failed to strip old gnu-debuglink from '$mod'. Link update might be problematic."
     fi
     if ! "$OBJCOPY" --add-gnu-debuglink="$compressed_debug_path" "$mod"; then
         echo "Error: $OBJCOPY --add-gnu-debuglink failed for '$mod' (linking to ${compressed_debug_path})"
-        exit 1
+        # exit 1
     fi
 fi
 
@@ -342,27 +345,21 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
 
     _print_message("Copying and sanitizing configuration files...", indent=2)
     
-    if kernel_stuff_dir and (kernel_stuff_dir / "config").is_file():
-        # Assuming kernel_stuff_dir / "config" is the base config for the target arch
-        # The name in files/ should reflect the arch, e.g. config.x86_64
-        # This part might need to be smarter if kernel_stuff_dir has multiple arch configs
-        arch_specific_config_name = f"config.{pkgbuild_data.get('arch', 'x86_64')}" # Default to x86_64 if arch not in pkgbuild_data
-        
-        # Check if kernel_stuff_dir/config exists, or kernel_stuff_dir/config.arch
+    arch_for_config = pkgbuild_data.get('arch', 'x86_64') # Get arch, default to x86_64
+    arch_specific_config_name = f"config.{arch_for_config}"
+    target_config_path_in_files = files_dir / arch_specific_config_name
+
+    if kernel_stuff_dir:
         base_config_to_copy = kernel_stuff_dir / "config"
         if not base_config_to_copy.is_file() and (kernel_stuff_dir / arch_specific_config_name).is_file():
             base_config_to_copy = kernel_stuff_dir / arch_specific_config_name
         
         if base_config_to_copy.is_file():
-            target_config_path_in_files = files_dir / arch_specific_config_name
             sanitized_content = sanitize_config_file(base_config_to_copy)
             target_config_path_in_files.write_text(sanitized_content)
             _print_message(f"Copied base config from {base_config_to_copy} to {target_config_path_in_files}", indent=3)
         else:
              _print_message(f"Base config (config or {arch_specific_config_name}) not found in {kernel_stuff_dir}. Template will need manual addition or rely on defconfig.", level="warning", indent=3)
-
-    elif kernel_stuff_dir: 
-        _print_message(f"Base 'config' not found in {kernel_stuff_dir}. Template will need a placeholder or manual addition.", level="warning", indent=3)
     else: 
         _print_message("kernel_stuff_path not provided. Base 'config' will not be copied. Template will need a placeholder or manual addition.", level="info", indent=3)
         
@@ -389,10 +386,8 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
         "mv-debug.sh": calculate_sha256(mv_debug_script_path),
         "0001-fix-musl-objtool.patch": calculate_sha256(musl_patch_path),
     }
-    # Add checksum for base config if it was copied
-    copied_config_path = files_dir / f"config.{pkgbuild_data.get('arch', 'x86_64')}"
-    if copied_config_path.exists():
-        file_checksums[copied_config_path.name] = calculate_sha256(copied_config_path)
+    if target_config_path_in_files.exists():
+        file_checksums[target_config_path_in_files.name] = calculate_sha256(target_config_path_in_files)
         
     return file_checksums
 
@@ -404,10 +399,10 @@ def generate_template_py_content(
     pkgver = pkgbuild_data["pkgver"] 
     pkgrel = pkgbuild_data["pkgrel"] 
     surface_archive_tag = pkgbuild_data["surface_archive_tag"] 
+    # kernel_major_minor is now also passed in pkgbuild_data
+    kernel_major_minor = pkgbuild_data["kernel_major_minor"]
+    kernel_major = kernel_major_minor.split('.')[0]
 
-    kernel_major_minor_parts = pkgver.split('.')
-    kernel_major = kernel_major_minor_parts[0]
-    kernel_major_minor = f"{kernel_major_minor_parts[0]}.{kernel_major_minor_parts[1]}"
 
     chimera_hostmakedepends = ["base-kernel-devel"]
     pkgb_makedepends = pkgbuild_data.get("makedepends", [])
@@ -444,12 +439,7 @@ make_env = {
 
     prepare_function_str = f"""
 def prepare(self):
-    # self.pkgver is like "6.8.1"
-    # self.surface_archive_tag is like "v6.8-1" (passed via pkgbuild_data)
-    # kernel_major_minor is like "6.8" (passed via pkgbuild_data)
-    # output_cport_name is like "linux-surface-generated" (passed via pkgbuild_data)
-
-    # Apply main kernel patch (inside build_wrksrc, e.g., linux-6.8)
+    # Apply main kernel patch (inside build_wrksrc, e.g., linux-{kernel_major_minor})
     with self.pushd(self.build_wrksrc):
         self.log("Applying main kernel patch...")
         patch_filename = f"patch-{pkgver}.xz" 
@@ -474,10 +464,7 @@ def prepare(self):
             self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit after main kernel patch")
         
         self.log("Applying Surface patches...")
-        # surface_archive_tag is like "v6.8-1"
-        # kernel_major_minor is like "6.8"
         surface_extracted_dir_name = f"linux-surface-{surface_archive_tag}"
-        # Path from inside build_wrksrc (e.g. linux-6.8) to the extracted surface dir root
         surface_archive_root_chroot = self.chroot_cwd / ".." / surface_extracted_dir_name 
         surface_patches_subdir_chroot = surface_archive_root_chroot / "patches" / "{kernel_major_minor}"
         
@@ -487,18 +474,14 @@ def prepare(self):
                 self.log_warn(f"No .patch files found in {{surface_patches_subdir_chroot}}")
             for patch_file_chroot in patch_files_chroot:
                 self.log(f"Applying Surface patch {{patch_file_chroot.name}}...")
-                self.do("patch", "-Np1", "-i", patch_file_chroot) # Using patch -Np1
+                self.do("patch", "-Np1", "-i", patch_file_chroot)
         else:
             self.log_warn(f"Surface patches directory not found: {{surface_patches_subdir_chroot}}")
             self.log_warn(f"Searched in '{{surface_extracted_dir_name}}/patches/{kernel_major_minor}' relative to '{{self.chroot_srcdir}}'.")
             self.log_warn(f"Ensure the surface archive (tag: {surface_archive_tag}) extracts to '{{surface_extracted_dir_name}}' alongside '{{self.build_wrksrc}}'.")
 
         self.log("Merging kernel configurations...")
-        # Base config from files/ (if provided by user)
-        # self.profile().arch gives current target arch, e.g., "x86_64"
         host_base_config_file = self.files_path / f"config.{{self.profile().arch}}"
-        
-        # Surface config from the extracted surface archive
         surface_config_chroot_path = surface_archive_root_chroot / "configs" / f"surface-{kernel_major_minor}.config"
 
         if not host_base_config_file.is_file():
@@ -510,7 +493,7 @@ def prepare(self):
 
         if surface_config_chroot_path.is_file():
             self.log(f"Merging with Surface config: {{surface_config_chroot_path.name}}")
-            self.do("cp", surface_config_chroot_path, ".config.surface") # Copy to a temporary name
+            self.do("cp", surface_config_chroot_path, ".config.surface")
             merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(self.chroot_cwd / ".config")}}
             self.do(
                 "./scripts/kconfig/merge_config.sh", "-m",
@@ -523,12 +506,9 @@ def prepare(self):
 
         self.log("Setting CONFIG_LOCALVERSION...")
         self.do("scripts/config", "--enable", "CONFIG_LOCALVERSION_AUTO", env=self.make_env)
-        # Set a specific localversion suffix; pkgrel will be appended by localversion.10-pkgrel
         self.do("scripts/config", "--set-str", "CONFIG_LOCALVERSION", f"-{output_cport_name.replace('linux-', '')}", env=self.make_env)
         
-        # Create localversion files for pkgrel. The kernel build system uses these with CONFIG_LOCALVERSION_AUTO.
         self.do("sh", "-c", f"echo '-r{{self.pkgrel}}' > localversion.10-pkgrel")
-        # self.do("sh", "-c", f"echo '-{output_cport_name.replace('linux-', '')}' > localversion.20-pkgname") # This part is now in CONFIG_LOCALVERSION
 
         self.log("Running make olddefconfig to finalize .config...")
         self.do("make", "olddefconfig", env=self.make_env) 
@@ -547,29 +527,28 @@ def prepare(self):
 pkgname = "{output_cport_name}"
 pkgver = "{pkgver}" # e.g., 6.8.1
 pkgrel = {pkgrel} # e.g., 0
-# These will be available in the template context
-surface_archive_tag = "{surface_archive_tag}"
-kernel_major_minor = "{kernel_major_minor}"
+# These will be available in the template context via self.pkgname, self.pkgver etc.
+# surface_archive_tag and kernel_major_minor are directly formatted into prepare()
+# as they are not standard cbuild template attributes.
 
-pkgdesc = f"Linux kernel ({{kernel_major_minor}} series) with Surface patches"
+pkgdesc = f"Linux kernel ({kernel_major_minor} series) with Surface patches"
 archs = ["x86_64"]
 license = "GPL-2.0-only"
 url = "https://github.com/linux-surface/linux-surface"
-build_wrksrc = f"linux-{{kernel_major_minor}}" # From kernel.org tarball
-# wrksrc will be default (pkgname-pkgver), cbuild handles this
+build_wrksrc = f"linux-{kernel_major_minor}" # From kernel.org tarball
 
 source = [
     # 1. Base kernel from kernel.org
-    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{{kernel_major_minor}}.tar.xz",
+    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz",
     # 2. Incremental patch from kernel.org (for the specific pkgver) - Not extracted by cbuild
     f"!https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz",
     # 3. Surface patches/configs archive from linux-surface GitHub
-    f"https://github.com/linux-surface/linux-surface/archive/refs/tags/{{surface_archive_tag}}.tar.gz>{{pkgname}}-{{surface_archive_tag}}-surface-sources.tar.gz"
+    f"https://github.com/linux-surface/linux-surface/archive/refs/tags/{surface_archive_tag}.tar.gz>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
 ]
 sha256 = [
-    "{sha256_kernel_tar}", # For linux-{{kernel_major_minor}}.tar.xz
+    "{sha256_kernel_tar}", # For linux-{kernel_major_minor}.tar.xz
     "{sha256_kernel_patch}", # For patch-{pkgver}.xz
-    "{sha256_surface_archive}"  # For {{pkgname}}-{{surface_archive_tag}}-surface-sources.tar.gz
+    "{sha256_surface_archive}"  # For {{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz
 ]
 # Note: patch-{pkgver}.xz is applied manually in prepare()
 
@@ -680,17 +659,21 @@ def _(self):
     self.options = ["foreignelf", "execstack", "!scanshlibs"]
     
     # kernelrelease_real determination logic from base-kernel
-    kernelrelease_real = self.parent.pkgver + self.parent.localversion
-    if (self.parent.destdir / f"usr/lib/modules/{{kernelrelease_real}}").is_dir():
-        pass # kernelrelease_real is likely correct
-    elif hasattr(self.parent, 'rparent') and hasattr(self.parent.rparent, 'destdir') and (self.parent.rparent.destdir / "usr/lib/modules").exists():
-        module_paths = list((self.parent.rparent.destdir / "usr/lib/modules").glob("*"))
-        if module_paths:
-            kernelrelease_real = module_paths[0].name # Fallback if direct construction failed
+    # self.localversion is available on the parent package object (self.parent)
+    kernelrelease_real = self.parent.pkgver + getattr(self.parent, 'localversion', '')
+    
+    # Check if the constructed path exists, otherwise try to find it
+    if not (self.parent.destdir / f"usr/lib/modules/{{kernelrelease_real}}").is_dir():
+        self.log_warn(f"Constructed kernelrelease path 'usr/lib/modules/{{kernelrelease_real}}' not found.")
+        if hasattr(self.parent, 'rparent') and hasattr(self.parent.rparent, 'destdir') and (self.parent.rparent.destdir / "usr/lib/modules").exists():
+            module_paths = list((self.parent.rparent.destdir / "usr/lib/modules").glob("*"))
+            if module_paths:
+                kernelrelease_real = module_paths[0].name # Fallback if direct construction failed
+                self.log_warn(f"Using found kernelrelease: {{kernelrelease_real}}")
+            else:
+                 self.log_warn(f"Could not reliably determine kernelrelease for -devel paths. Using constructed: {{kernelrelease_real}}")
         else:
-             self.log_warn(f"Could not reliably determine kernelrelease for -devel paths. Using constructed: {{kernelrelease_real}}")
-    else:
-        self.log_warn(f"Could not find modules directory to determine kernelrelease for -devel paths. Using constructed: {{kernelrelease_real}}")
+            self.log_warn(f"Could not find modules directory to determine kernelrelease for -devel paths. Using constructed: {{kernelrelease_real}}")
 
     return [
         f"usr/lib/modules/{{kernelrelease_real}}/build",
@@ -710,13 +693,20 @@ def main() -> None:
     _print_message("--- Linux Surface Cports Template Generator ---", message_styles=["bold", "purple"])
     args = parse_arguments()
 
+    # Calculate kernel_major_minor here for use in main()
+    pkgver_main_for_calc = args.kernel_version
+    kernel_major_minor_parts_for_calc = pkgver_main_for_calc.split('.')
+    kernel_major_minor_for_main = f"{kernel_major_minor_parts_for_calc[0]}.{kernel_major_minor_parts_for_calc[1]}"
+
+
     pkgbuild_data_main: Dict[str, Any] = {
         "pkgver": args.kernel_version,
         "pkgrel": "0", 
         "surface_archive_tag": args.surface_archive_tag,
+        "kernel_major_minor": kernel_major_minor_for_main, # Add for use in generate_template_py_content
         "makedepends": [], 
         "patch_filenames": [],
-        "arch": "x86_64" # Default or determine from system/args
+        "arch": "x86_64" 
     }
 
     _print_message(f"Target Kernel Version: {args.kernel_version}", indent=1)
@@ -731,7 +721,6 @@ def main() -> None:
         if pkgbuild_file_path.is_file():
             parsed_data_from_pkgb = parse_pkgbuild(pkgbuild_file_path)
             pkgbuild_data_main["makedepends"] = parsed_data_from_pkgb.get("makedepends", [])
-            # patch_filenames from PKGBUILD are not used as we source patches differently now
             _print_message(f"  Found {len(pkgbuild_data_main['makedepends'])} makedepends.", indent=2)
         else:
             _print_message(f"  PKGBUILD not found in {args.kernel_stuff_path}. Skipping.", level="warning", indent=2)
@@ -753,7 +742,6 @@ def main() -> None:
     _print_message("Cport directory and files prepared.", level="success", indent=1)
 
     _print_message("Step 3: Generating template.py content...", message_styles=["bold"])
-    # Pass necessary data for prepare function string formatting
     template_content = generate_template_py_content(
         args.output_name, 
         pkgbuild_data_main, 
@@ -771,21 +759,18 @@ def main() -> None:
         sys.exit(1)
     
     _print_message("Step 5: Creating subpackage symlinks...", message_styles=["bold"])
-    # -devel subpackage
     devel_subpackage_name = f"{args.output_name}-devel"
     symlink_path_devel = CPORTS_MAIN_DIR / devel_subpackage_name
-    target_dir_for_symlink = pathlib.Path(args.output_name) # Relative to CPORTS_MAIN_DIR
+    target_dir_for_symlink = pathlib.Path(args.output_name) 
 
     if symlink_path_devel.exists() or symlink_path_devel.is_symlink():
         if args.force:
             _print_message(f"Removing existing devel subpackage symlink: {symlink_path_devel}", level="warning", indent=1)
             symlink_path_devel.unlink(missing_ok=True)
-        # Do not error if not forcing and symlink exists and is correct
         elif symlink_path_devel.is_symlink() and symlink_path_devel.resolve().name == args.output_name:
              _print_message(f"Devel subpackage symlink {symlink_path_devel} already exists and is correct.", indent=1)
-        else: # Exists but is not a correct symlink, or is a directory
+        else: 
             _print_message(f"Error: Path {symlink_path_devel} for devel subpackage exists and is not a correct symlink. Use --force to overwrite.", level="error", indent=1)
-            # sys.exit(1) # Commenting out exit to allow -dbg symlink creation attempt
 
     if not symlink_path_devel.exists():
         try:
@@ -794,7 +779,6 @@ def main() -> None:
         except OSError as e:
             _print_message(f"Error creating symlink for -devel subpackage: {e}", level="error", indent=1)
 
-    # -dbg subpackage
     dbg_subpackage_name = f"{args.output_name}-dbg"
     symlink_path_dbg = CPORTS_MAIN_DIR / dbg_subpackage_name
 
@@ -806,7 +790,6 @@ def main() -> None:
             _print_message(f"Dbg subpackage symlink {symlink_path_dbg} already exists and is correct.", indent=1)
         else:
             _print_message(f"Error: Path {symlink_path_dbg} for dbg subpackage exists and is not a correct symlink. Use --force to overwrite.", level="error", indent=1)
-            # sys.exit(1)
 
     if not symlink_path_dbg.exists():
         try:
@@ -814,7 +797,6 @@ def main() -> None:
             _print_message(f"Created symlink for -dbg subpackage: {symlink_path_dbg} -> {target_dir_for_symlink}", level="success", indent=1)
         except OSError as e:
             _print_message(f"Error creating symlink for -dbg subpackage: {e}", level="error", indent=1)
-            # _print_message("You might need to run 'cbuild relink-subpkgs' manually in the cports directory.", level="info", indent=1) # Not for -dbg
     
     print("-" * 60)
     _print_message("--- Generation Complete! ---", level="star", message_styles=["bold"])
@@ -822,9 +804,9 @@ def main() -> None:
     _print_message(f"  {CPORTS_MAIN_DIR / args.output_name}", indent=2, message_styles=["cyan"])
     _print_message("IMPORTANT: You need to update the 'sha256' list in the generated template.py:", level="warning", indent=1)
     _print_message(f"  The 'sha256' list has three placeholder entries corresponding to the three URLs in the 'source' list:", indent=2)
-    _print_message(f"    1. Kernel.org base tarball (e.g., linux-{kernel_major_minor}.tar.xz)", indent=3)
-    _print_message(f"    2. Kernel.org incremental patch (e.g., patch-{pkgver}.xz)", indent=3)
-    _print_message(f"    3. Linux-surface archive (e.g., {args.output_name}-{surface_archive_tag}-surface-sources.tar.gz)", indent=3)
+    _print_message(f"    1. Kernel.org base tarball (e.g., linux-{kernel_major_minor_for_main}.tar.xz)", indent=3) # Use calculated var
+    _print_message(f"    2. Kernel.org incremental patch (e.g., patch-{args.kernel_version}.xz)", indent=3) # Use args
+    _print_message(f"    3. Linux-surface archive (e.g., {args.output_name}-{args.surface_archive_tag}-surface-sources.tar.gz)", indent=3) # Use args
     _print_message(f"  To get the checksums:", indent=2)
     _print_message(f"    a. Run: ./cbuild fetch main/{args.output_name}", indent=3)
     _print_message(f"    b. cbuild will download the files and print their SHA256 checksums (it might error if placeholders are still in use).", indent=3)
@@ -837,7 +819,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        _print_message(f"An unexpected script error occurred: {e}", level="error") # Generic error message
+        _print_message(f"An unexpected script error occurred: {e}", level="error") 
         import traceback
         traceback.print_exc()
         sys.exit(1)

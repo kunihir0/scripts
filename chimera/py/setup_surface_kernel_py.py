@@ -325,6 +325,10 @@ def generate_template_py_content(
             chimera_hostmakedepends.append("libarchive")
         elif dep == "libelf":
             chimera_hostmakedepends.append("elfutils-devel") # libelf is provided by elfutils
+        elif dep == "tar":
+            # libarchive provides tar (and cpio)
+            if "libarchive" not in chimera_hostmakedepends: # Avoid duplicates if cpio also added it
+                chimera_hostmakedepends.append("libarchive")
         else:
             chimera_hostmakedepends.append(dep)
     

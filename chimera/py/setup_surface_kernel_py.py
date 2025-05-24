@@ -445,7 +445,7 @@ def prepare(self):
         # The following lines are part of the *generated template string*:
         kernelrelease_content_out = self.do("cat", "version", capture_output=True, check=True)
         kernelrelease = kernelrelease_content_out.stdout.strip() # kernelrelease is a Python var in template
-        self.log(f"Kernel release from version file: {{kernelrelease}}") # This logs the template's 'kernelrelease'
+        self.log(f"Kernel release from version file: {{kernelrelease}}") # Correctly escaped for generator
 
         self.log("Running make mrproper...")
         self.do("make", *_make_vars, "mrproper")
@@ -506,9 +506,10 @@ def prepare(self):
             self.do("sh", "-c", "cat .config.arch >> .config")
 
         self.log("Running make olddefconfig...")
-        # kernelrelease is now a Python variable in the template's prepare() scope
-        self.do("make", *_make_vars, f"KERNELRELEASE={kernelrelease}", "olddefconfig")
-        self.log(f"Prepared {{self.pkgname}} version {kernelrelease}") # Use Python var
+        # kernelrelease is a Python variable in the template's prepare() scope.
+        # The f-string for KERNELRELEASE= needs to be evaluated by the template, so escape for generator.
+        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "olddefconfig")
+        self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}") # Correctly escaped for generator
 
 def build(self):
     _make_vars = [ # This _make_vars is local to build() in generated template
@@ -518,15 +519,17 @@ def build(self):
     with self.pushd(self.build_wrksrc):
         # Read the version file created in prepare()
         kernelrelease = (self.chroot_cwd / "version").read_text().strip()
-        self.log(f"Building kernel version {kernelrelease}") # Use Python var
-        self.do("make", *_make_vars, f"KERNELRELEASE={kernelrelease}", "all") # Use Python var
+        # kernelrelease is a Python var in template's build() scope.
+        # The f-strings for log and make need to be evaluated by the template.
+        self.log(f"Building kernel version {{kernelrelease}}") # Correctly escaped
+        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "all") # Correctly escaped
 
 def install(self):
     with self.pushd(self.build_wrksrc):
-        kernelrelease = (self.chroot_cwd / "version").read_text().strip()
-        self.log(f"Installing kernel version {{kernelrelease}}...")
+        kernelrelease = (self.chroot_cwd / "version").read_text().strip() # Reads file, kernelrelease is Python var
+        self.log(f"Installing kernel version {{kernelrelease}}") # Correctly escaped for generator
         
-        modulesdir = self.destdir / f"usr/lib/modules/{{kernelrelease}}"
+        modulesdir = self.destdir / f"usr/lib/modules/{{kernelrelease}}" # Correctly escaped for generator
         image_name_out = self.do("make", "-s", "image_name", capture_output=True, check=True)
         image_name = image_name_out.stdout.strip()
 
@@ -587,7 +590,8 @@ def install(self):
         
         self.log("Setting up /usr/src symlink...")
         self.install_dir(self.destdir / "usr/src")
-        self.ln_s(f"../lib/modules/{{kernelrelease}}/build", self.destdir / f"usr/src/{{self.pkgname}}", relative=True)
+        # kernelrelease is Python var in template's install() scope
+        self.ln_s(f"../lib/modules/{{kernelrelease}}/build", self.destdir / f"usr/src/{{self.pkgname}}", relative=True) # Correctly escaped
 
 @subpackage(f"{{pkgname}}-devel")
 def _(self):

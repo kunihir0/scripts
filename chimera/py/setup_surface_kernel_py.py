@@ -442,9 +442,10 @@ def prepare(self):
         self.do("sh", "-c", f"make {{' '.join(_make_vars)}} -s kernelrelease > version")
 
         # Read the kernelrelease from the created 'version' file for subsequent use
+        # The following lines are part of the *generated template string*:
         kernelrelease_content_out = self.do("cat", "version", capture_output=True, check=True)
-        kernelrelease = kernelrelease_content_out.stdout.strip() # kernelrelease is now a Python var in template
-        self.log(f"Kernel release from version file: {kernelrelease}") # Use Python var directly
+        kernelrelease = kernelrelease_content_out.stdout.strip() # kernelrelease is a Python var in template
+        self.log(f"Kernel release from version file: {{kernelrelease}}") # This logs the template's 'kernelrelease'
 
         self.log("Running make mrproper...")
         self.do("make", *_make_vars, "mrproper")

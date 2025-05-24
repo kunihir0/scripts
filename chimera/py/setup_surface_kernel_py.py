@@ -425,7 +425,7 @@ make_env = {
     "LDFLAGS": "", # Explicitly clear LDFLAGS for kernel build
 }"""
     # Dedent to remove common leading whitespace, then indent with 4 spaces for template.py
-    make_env_block_for_template = textwrap.indent(textwrap.dedent(make_env_block_for_template).strip(), "    ")
+    make_env_block_for_template = textwrap.indent(textwrap.dedent(make_env_block_raw).strip(), "    ")
 
 
     template_str = f"""\

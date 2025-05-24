@@ -501,8 +501,8 @@ def prepare(self):
             chroot_config_path,
             chroot_surface_config_path,
             chroot_arch_config_path,
-            tmpfiles=[host_config_file, host_surface_config_file, host_arch_config_file],
-            wrksrc=self.chroot_cwd # merge_config.sh needs to run in the kernel source dir
+            tmpfiles=[host_config_file, host_surface_config_file, host_arch_config_file]
+            # wrksrc is implicitly self.chroot_cwd due to self.pushd(...)
         )
 
         self.log("Running make olddefconfig...")

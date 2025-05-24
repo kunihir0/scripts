@@ -409,7 +409,7 @@ def generate_template_py_content(
         chimera_hostmakedepends.append("bc-gh") 
     if "git" in pkgb_makedepends and "git" not in chimera_hostmakedepends:
         chimera_hostmakedepends.append("git")
-    common_kernel_deps = ["elfutils-devel", "openssl-devel", "perl", "flex", "bison", "kmod-devel", "python"]
+    common_kernel_deps = ["elfutils-devel", "openssl3-devel", "perl", "flex", "bison", "kmod-devel", "python", "zlib-ng-compat-devel"]
     for dep in common_kernel_deps:
         if dep not in chimera_hostmakedepends:
             chimera_hostmakedepends.append(dep)

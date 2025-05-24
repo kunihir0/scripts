@@ -409,6 +409,7 @@ def generate_template_py_content(
         chimera_hostmakedepends.append("bc-gh") 
     if "git" in pkgb_makedepends and "git" not in chimera_hostmakedepends:
         chimera_hostmakedepends.append("git")
+    
     common_kernel_deps = ["elfutils-devel", "openssl3-devel", "perl", "flex", "bison", "kmod-devel", "python", "zlib-ng-compat-devel"]
     for dep in common_kernel_deps:
         if dep not in chimera_hostmakedepends:
@@ -438,96 +439,161 @@ make_env = {
 
     prepare_function_str = f"""
 def prepare(self):
-    # Values like pkgver, surface_archive_tag, kernel_major_minor, output_cport_name
-    # are baked into this function string by the generator.
-    # Standard template attributes like self.pkgver, self.pkgrel are accessed via self.
+    self.log(f"--- Starting prepare() for {{self.pkgname}} {{self.pkgver}}-{{self.pkgrel}} ---")
+    self.log(f"Host CWD (Python process CWD): {{pathlib.Path.cwd()}}")
+    self.log(f"Chroot CWD (at start of prepare, should be build_wrksrc): {{self.chroot_cwd}}")
+    self.log(f"self.build_wrksrc: {{self.build_wrksrc}}")
+    self.log(f"self.chroot_sources_path: {{self.chroot_sources_path}}")
+    self.log(f"self.chroot_files_path: {{self.chroot_files_path}}")
+    self.log(f"self.files_path (host path to template files/): {{self.files_path}}")
+
+    self.log(f"Listing contents of {{self.chroot_sources_path}} (from chroot):")
+    self.do("ls", "-la", self.chroot_sources_path, capture_output=True, check=False)
 
     with self.pushd(self.build_wrksrc):
-        self.log("Applying main kernel patch...")
-        patch_filename = f"patch-{pkgver}.xz" 
-        kernel_patch_chroot_path = self.chroot_sources_path / patch_filename
+        self.log(f"Current directory in chroot after pushd(self.build_wrksrc): {{self.chroot_cwd}}")
+        self.log("--- Applying main kernel patch ---")
         
-        if not kernel_patch_chroot_path.is_file():
-            self.error(f"Kernel patch {{patch_filename}} not found at {{kernel_patch_chroot_path}}")
+        patch_filename_var = f"patch-{pkgver}.xz"
+        self.log(f"Calculated patch_filename_var: {{patch_filename_var}}")
         
+        kernel_patch_chroot_path_var = self.chroot_sources_path / patch_filename_var
+        self.log(f"Calculated kernel_patch_chroot_path_var (chroot path): {{kernel_patch_chroot_path_var}}")
+        
+        host_side_check_exists = kernel_patch_chroot_path_var.is_file() # Host-side check on mapped path
+        self.log(f"Host-side check: kernel_patch_chroot_path_var.is_file() = {{host_side_check_exists}}")
+
+        if not host_side_check_exists:
+            self.error(f"Kernel patch {{patch_filename_var}} not found at host-mapped path for {{kernel_patch_chroot_path_var}}")
+        
+        self.log(f"Attempting to list specific patch file '{{kernel_patch_chroot_path_var}}' (from chroot):")
+        self.do("ls", "-l", kernel_patch_chroot_path_var, capture_output=True, check=False)
+
+        self.log(f"Attempting to xzcat {{kernel_patch_chroot_path_var}} to main_kernel.patch")
         self.do(
-            "xzcat", kernel_patch_chroot_path,
+            "xzcat", kernel_patch_chroot_path_var,
             stdout_to_file="main_kernel.patch"
         )
-        self.do("patch", "-Np1", "-i", self.chroot_cwd / "main_kernel.patch")
-        self.rm(self.chroot_cwd / "main_kernel.patch")
+        self.log(f"Successfully xzcatted to main_kernel.patch. Size of main_kernel.patch (in chroot):")
+        self.do("ls", "-lh", self.chroot_cwd / "main_kernel.patch", capture_output=True, check=False)
 
-        if not (self.chroot_cwd / ".git").is_dir():
+        self.log(f"Applying main_kernel.patch with: patch -Np1 -i {{self.chroot_cwd / 'main_kernel.patch'}}")
+        self.do("patch", "-Np1", "-i", self.chroot_cwd / "main_kernel.patch")
+        self.log(f"Successfully applied main_kernel.patch")
+        self.rm(self.chroot_cwd / "main_kernel.patch")
+        self.log(f"Removed main_kernel.patch")
+        self.log(f"--- Finished applying main kernel patch ---")
+
+        self.log(f"--- Initializing Git repository if needed ---")
+        if not (self.chroot_cwd / ".git").is_dir(): # Host-side check on chroot path
             self.log("Initializing git repository for patching...")
             self.do("git", "init")
             self.do("git", "config", "--local", "user.email", "cbuild@chimera-linux.org")
             self.do("git", "config", "--local", "user.name", "cbuild")
             self.do("git", "add", ".")
             self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit after main kernel patch")
-        
-        self.log("Applying Surface patches...")
-        surface_extracted_dir_name = f"linux-surface-{surface_archive_tag}"
-        surface_archive_root_chroot = self.chroot_cwd / ".." / surface_extracted_dir_name 
-        surface_patches_subdir_chroot = surface_archive_root_chroot / "patches" / "{kernel_major_minor}"
-        
-        if surface_patches_subdir_chroot.is_dir():
-            patch_files_chroot = sorted(list(surface_patches_subdir_chroot.glob("*.patch")))
-            if not patch_files_chroot:
-                self.log_warn(f"No .patch files found in {{surface_patches_subdir_chroot}}")
-            for patch_file_chroot in patch_files_chroot:
-                self.log(f"Applying Surface patch {{patch_file_chroot.name}}...")
-                self.do("patch", "-Np1", "-i", patch_file_chroot)
+            self.log("Git repository initialized and initial commit made.")
         else:
-            self.log_warn(f"Surface patches directory not found: {{surface_patches_subdir_chroot}}")
-            self.log_warn(f"Searched in '{{surface_extracted_dir_name}}/patches/{kernel_major_minor}' relative to '{{self.chroot_srcdir}}'.")
-            self.log_warn(f"Ensure the surface archive (tag: {surface_archive_tag}) extracts to '{{surface_extracted_dir_name}}' alongside '{{self.build_wrksrc}}'.")
+            self.log("Git repository already exists.")
+        self.log(f"--- Finished Git initialization ---")
+        
+        self.log(f"--- Applying Surface patches ---")
+        surface_extracted_dir_name_var = f"linux-surface-{surface_archive_tag}"
+        self.log(f"Calculated surface_extracted_dir_name_var: {{surface_extracted_dir_name_var}}")
+        # Relative to self.chroot_srcdir, which is parent of self.build_wrksrc
+        # So, if build_wrksrc is /sources/pkg/linux-X.Y, then srcdir is /sources/pkg
+        # Then surface_archive_root_chroot_var is /sources/pkg/linux-surface-TAG
+        surface_archive_root_chroot_var = self.chroot_sources_path / surface_extracted_dir_name_var
+        self.log(f"Calculated surface_archive_root_chroot_var (chroot path): {{surface_archive_root_chroot_var}}")
+        
+        surface_patches_subdir_chroot_var = surface_archive_root_chroot_var / "patches" / "{kernel_major_minor}"
+        self.log(f"Calculated surface_patches_subdir_chroot_var (chroot path): {{surface_patches_subdir_chroot_var}}")
+        
+        self.log(f"Listing contents of surface_archive_root_chroot_var ({{surface_archive_root_chroot_var}}) (from chroot):")
+        self.do("ls", "-la", surface_archive_root_chroot_var, capture_output=True, check=False)
+        self.log(f"Listing contents of surface_patches_subdir_chroot_var ({{surface_patches_subdir_chroot_var}}) (from chroot):")
+        self.do("ls", "-la", surface_patches_subdir_chroot_var, capture_output=True, check=False)
 
-        self.log("Merging kernel configurations...")
-        host_base_config_file = self.files_path / f"config.{{self.profile().arch}}"
-        surface_config_chroot_path = surface_archive_root_chroot / "configs" / f"surface-{kernel_major_minor}.config"
+        if surface_patches_subdir_chroot_var.is_dir(): # Host-side check on chroot path
+            self.log(f"Surface patches subdir {{surface_patches_subdir_chroot_var}} IS a directory (host-side check).")
+            patch_files_chroot_var = sorted(list(surface_patches_subdir_chroot_var.glob("*.patch"))) # Host-side glob on chroot path
+            self.log(f"Found {{len(patch_files_chroot_var)}} patch files (host-side glob): {{[p.name for p in patch_files_chroot_var]}}")
+            if not patch_files_chroot_var:
+                self.log_warn(f"No .patch files found in {{surface_patches_subdir_chroot_var}} (host-side glob).")
+            for patch_file_chroot_item in patch_files_chroot_var:
+                self.log(f"Applying Surface patch (chroot path) {{patch_file_chroot_item.name}} from {{patch_file_chroot_item}}...")
+                self.do("patch", "-Np1", "-i", patch_file_chroot_item) 
+                self.log(f"Successfully applied {{patch_file_chroot_item.name}}.")
+        else:
+            self.log_warn(f"Surface patches directory not found (host-side check): {{surface_patches_subdir_chroot_var}}")
+            self.log_warn(f"Searched in '{{surface_extracted_dir_name_var}}/patches/{kernel_major_minor}' relative to '{{self.chroot_sources_path}}'.")
+            self.log_warn(f"Ensure the surface archive (tag: {surface_archive_tag}) extracts to '{{surface_extracted_dir_name_var}}' inside '{{self.chroot_sources_path}}'.")
+        self.log(f"--- Finished applying Surface patches ---")
 
-        if not host_base_config_file.is_file():
-            self.log_warn(f"Base config file '{{host_base_config_file.name}}' not found in template files directory. Attempting defconfig.")
+        self.log(f"--- Merging kernel configurations ---")
+        host_base_config_file_var = self.files_path / f"config.{{self.profile().arch}}"
+        self.log(f"Host base config file path (host path): {{host_base_config_file_var}}")
+        surface_config_chroot_path_var = surface_archive_root_chroot_var / "configs" / f"surface-{kernel_major_minor}.config"
+        self.log(f"Surface config chroot path (chroot path): {{surface_config_chroot_path_var}}")
+
+        if not host_base_config_file_var.is_file(): # Host-side check
+            self.log_warn(f"Base config file '{{host_base_config_file_var.name}}' not found in template files directory ({{self.files_path}}). Attempting defconfig.")
             self.do("make", "defconfig", env=self.make_env)
+            self.log(f"Ran make defconfig.")
         else:
-            self.log(f"Using base config: {{host_base_config_file.name}}")
-            self.do("cp", self.chroot_files_path / host_base_config_file.name, ".config")
+            self.log(f"Using base config: {{host_base_config_file_var.name}} from {{self.chroot_files_path}} (chroot path for files dir)")
+            self.do("cp", self.chroot_files_path / host_base_config_file_var.name, ".config")
+            self.log(f"Copied base config to .config")
 
-        if surface_config_chroot_path.is_file():
-            self.log(f"Merging with Surface config: {{surface_config_chroot_path.name}}")
-            self.do("cp", surface_config_chroot_path, ".config.surface")
-            merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(self.chroot_cwd / ".config")}}
+        if surface_config_chroot_path_var.is_file(): # Host-side check on chroot path
+            self.log(f"Surface config {{surface_config_chroot_path_var.name}} found. Merging with Surface config.")
+            self.do("cp", surface_config_chroot_path_var, ".config.surface")
+            self.log(f"Copied surface config to .config.surface")
+            merge_env_var = {{**self.make_env, "KCONFIG_CONFIG": str(self.chroot_cwd / ".config")}}
+            self.log(f"Running merge_config.sh with KCONFIG_CONFIG={{str(self.chroot_cwd / '.config')}}")
             self.do(
                 "./scripts/kconfig/merge_config.sh", "-m",
                 ".config", ".config.surface",
-                env=merge_env
+                env=merge_env_var
             )
+            self.log(f"Ran merge_config.sh. Removing .config.surface")
             self.rm(".config.surface")
         else:
-            self.log_warn(f"Surface-specific config file not found at {{surface_config_chroot_path}}. Using base/defconfig only.")
+            self.log_warn(f"Surface-specific config file not found at {{surface_config_chroot_path_var}} (host-side check on chroot path). Using base/defconfig only.")
+        self.log(f"--- Finished merging kernel configurations ---")
 
-        self.log("Setting CONFIG_LOCALVERSION...")
+        self.log(f"--- Setting CONFIG_LOCALVERSION ---")
         self.do("scripts/config", "--enable", "CONFIG_LOCALVERSION_AUTO", env=self.make_env)
-        self.do("scripts/config", "--set-str", "CONFIG_LOCALVERSION", f"-{output_cport_name.replace('linux-', '')}", env=self.make_env)
+        self.log(f"Enabled CONFIG_LOCALVERSION_AUTO.")
+        localversion_str_var = f"-{output_cport_name.replace('linux-', '')}" # Distinct var name
+        self.log(f"Setting CONFIG_LOCALVERSION to {{localversion_str_var}}")
+        self.do("scripts/config", "--set-str", "CONFIG_LOCALVERSION", localversion_str_var, env=self.make_env)
         
-        self.do("sh", "-c", f"echo '-r{{self.pkgrel}}' > localversion.10-pkgrel")
+        pkgrel_suffix_str_var = f"-r{{self.pkgrel}}" # Distinct var name
+        self.log(f"Writing '{{pkgrel_suffix_str_var}}' to localversion.10-pkgrel")
+        self.do("sh", "-c", f"echo '{pkgrel_suffix_str_var}' > localversion.10-pkgrel")
+        self.log(f"--- Finished setting CONFIG_LOCALVERSION ---")
 
-        self.log("Running make olddefconfig to finalize .config...")
+        self.log(f"--- Finalizing .config ---")
+        self.log("Running make olddefconfig...")
         self.do("make", "olddefconfig", env=self.make_env) 
+        self.log("Finalized .config with make olddefconfig.")
+        self.log(f"--- Finished finalizing .config ---")
         
-        self.log("Generating kernelrelease version file...")
+        self.log(f"--- Generating kernelrelease version file (version) ---")
         self.do("make", "kernelrelease", "-s", stdout_to_file="version", env=self.make_env)
-        kernelrelease = (self.chroot_cwd / "version").read_text().strip()
-        self.log(f"Final KERNELRELEASE for build: {{kernelrelease}}")
+        kernelrelease_var = (self.chroot_cwd / "version").read_text().strip() # Host reads file written in chroot
+        self.log(f"Final KERNELRELEASE for build: {{kernelrelease_var}}")
         
-        if kernelrelease.startswith(self.pkgver):
-            self.localversion = kernelrelease.replace(self.pkgver, "", 1)
+        if kernelrelease_var.startswith(self.pkgver):
+            self.localversion = kernelrelease_var.replace(self.pkgver, "", 1)
         else:
-            self.log_warn(f"KERNELRELEASE '{{kernelrelease}}' ('{{self.pkgver}}' + '{{getattr(self, 'localversion', '')}}') does not start with pkgver '{{self.pkgver}}'. Cannot set localversion accurately.")
+            self.log_warn(f"KERNELRELEASE '{{kernelrelease_var}}' (expected '{{self.pkgver}}' + '{{getattr(self, 'localversion', '')}}') does not start with pkgver '{{self.pkgver}}'. Cannot set localversion accurately.")
             self.localversion = "" 
         self.log(f"Set self.localversion to: '{{self.localversion}}'")
+        self.log(f"--- Finished generating kernelrelease ---")
 
-        self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}")
+        self.log(f"--- Finished prepare() for {{self.pkgname}} version {{kernelrelease_var}} ---")
 """
 
     template_str = f"""\

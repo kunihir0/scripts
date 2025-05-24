@@ -120,7 +120,7 @@ def parse_arguments() -> argparse.Namespace:
         "--surface-archive-tag",
         type=str,
         required=True,
-        help="Git tag or commit SHA for the linux-surface project archive (e.g., 'v6.8.1-arch1')."
+        help="Git tag for the linux-surface project archive (e.g., 'arch-6.14.2-1')."
     )
     parser.add_argument(
         "--kernel-stuff-path",
@@ -549,7 +549,7 @@ build_wrksrc = f"linux-{kernel_major_minor}"
 source = [
     f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz",
     f"!https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz",
-    f"https://github.com/linux-surface/linux-surface/archive/refs/tags/{surface_archive_tag}.tar.gz>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
+    f"https://codeload.github.com/linux-surface/linux-surface/tar.gz/refs/tags/{surface_archive_tag}>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
 ]
 sha256 = [
     "{sha256_kernel_tar}", 

@@ -332,7 +332,9 @@ def generate_template_py_content(
         else:
             chimera_hostmakedepends.append(dep)
     
+    _print_message(f"DEBUG: Chimera hostmakedepends before join: {chimera_hostmakedepends}", level="info", indent=1) # DEBUG
     hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in chimera_hostmakedepends])
+    _print_message(f"DEBUG: Generated hostmakedepends_list_str: {hostmakedepends_list_str}", level="info", indent=1) # DEBUG
     
     # Prepare KBUILD_BUILD_TIMESTAMP for make_ENV
     # Rely on cbuild to set SOURCE_DATE_EPOCH, and kernel Makefile to use it.

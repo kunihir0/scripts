@@ -375,9 +375,9 @@ _srctag_for_archive = "{_srctag_value}"
 # Let's use the _srcname from PKGBUILD as a hint, which is 'archlinux-linux'.
 # Or more generically, for github archives, it's often <repo_name>-<stripped_tag>
 # The archlinux PKGBUILD uses _srcname=archlinux-linux.
-# The tarball from github for tag v6.14.2-arch1 extracts to 'linux-6.14.2-arch1'
-# So, build_wrksrc should be "linux-{{_srctag_for_archive.lstrip('v')}}"
-build_wrksrc = f"linux-{{_srctag_for_archive.lstrip('v')}}"
+# The tarball from github for tag v6.14.2-arch1 extracts to 'linux-6.14.2-arch1'.
+# cbuild's 'extract' phase moves contents up if tarball has a single root dir.
+# So, build_wrksrc should not be set, allowing operations directly in self.srcdir.
 
 source = [
     f"https://github.com/archlinux/linux/archive/refs/tags/{{_srctag_for_archive}}.tar.gz>{{pkgname}}-{{pkgver}}-source.tar.gz"

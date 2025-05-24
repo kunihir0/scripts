@@ -439,20 +439,28 @@ def prepare(self):
         self.do("make", *_make_vars, "mrproper")
 
         self.log("Applying patches...")
-        if not (self.chroot_cwd / ".git").is_dir():
+        if not (self.chroot_cwd / ".git").is_dir(): # self.chroot_cwd is the source dir
             self.do("git", "init")
             self.do("git", "config", "--local", "user.email", "cbuild@chimera-linux.org")
             self.do("git", "config", "--local", "user.name", "cbuild")
             self.do("git", "add", ".")
             self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit before patching")
 
-        patches_dir = self.chroot_patches_path
-        sorted_patches = sorted(patches_dir.glob("*.patch"))
-        if not sorted_patches:
-            self.log_warn("No patches found in patches/ directory.")
-        for patch_file_chroot_path in sorted_patches:
-            self.log(f"Applying patch {{patch_file_chroot_path.name}}...")
-            self.do("git", "am", "-3", str(patch_file_chroot_path))
+        # Access patches via self.patches_path (host path).
+        # self.do() should handle making these accessible to the chrooted command.
+        host_side_patches_dir = self.patches_path
+        if host_side_patches_dir.is_dir():
+            # Glob on the host path. Ensure consistent order by sorting.
+            # Convert generator to list for sorting.
+            patch_file_host_paths = sorted(list(host_side_patches_dir.glob("*.patch")))
+            if not patch_file_host_paths:
+                self.log_warn(f"No .patch files found in {{host_side_patches_dir}}")
+            for host_patch_file in patch_file_host_paths: # host_patch_file is a host pathlib.Path
+                self.log(f"Applying patch {{host_patch_file.name}}...")
+                # Pass the host pathlib.Path object directly to self.do()
+                self.do("git", "am", "-3", host_patch_file)
+        else:
+            self.log_warn(f"Patches directory not found: {{host_side_patches_dir}}")
 
         self.log("Merging kernel configurations...")
         self.do(

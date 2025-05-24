@@ -508,7 +508,7 @@ def prepare(self):
         self.log("Running make olddefconfig...")
         # kernelrelease is a Python variable in the template's prepare() scope.
         # The f-string for KERNELRELEASE= needs to be evaluated by the template, so escape for generator.
-        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "olddefconfig")
+        self.do("make", *_make_vars, f"KERNELRELEASE={{kernelrelease}}", "olddefconfig") # Ensuring double braces
         self.log(f"Prepared {{self.pkgname}} version {{kernelrelease}}") # Correctly escaped for generator
 
 def build(self):

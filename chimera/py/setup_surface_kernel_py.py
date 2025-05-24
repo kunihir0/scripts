@@ -437,6 +437,18 @@ make_env = {
 }"""
     processed_make_env_block = textwrap.dedent(make_env_block_raw).strip()
 
+    # Define these Python variables in the generator's scope *before* they are used
+    # to construct the 'prepare_function_str' f-string.
+    # Their values will be embedded as literals into the generated prepare() method's code.
+    localversion_config_val = f"-{output_cport_name.replace('linux-', '')}"
+    # To get the literal string "-r{{self.pkgrel}}" into pkgrel_file_content_val,
+    # we need to escape the braces for the pkgrel_file_content_val f-string itself,
+    # and then again for the prepare_function_str f-string.
+    # So, f"-r{{{{self.pkgrel}}}}" becomes "-r{{self.pkgrel}}" in pkgrel_file_content_val.
+    # Then, when prepare_function_str uses f"...'{pkgrel_file_content_val}'...",
+    # it correctly embeds "-r{{self.pkgrel}}", which cbuild will later process.
+    pkgrel_file_content_val = f"-r{{{{self.pkgrel}}}}"
+
     prepare_function_str = f"""
 def prepare(self):
     self.log(f"--- Starting prepare() for {{self.pkgname}} {{self.pkgver}}-{{self.pkgrel}} ---")

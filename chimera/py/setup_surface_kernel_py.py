@@ -323,6 +323,8 @@ def generate_template_py_content(
             chimera_hostmakedepends.append("bc-gh")
         elif dep == "cpio":
             chimera_hostmakedepends.append("libarchive")
+        elif dep == "libelf":
+            chimera_hostmakedepends.append("elfutils-devel") # libelf is provided by elfutils
         else:
             chimera_hostmakedepends.append(dep)
     

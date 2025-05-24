@@ -374,10 +374,13 @@ _srctag_for_archive = "{_srctag_value}"
 # However, for the archlinux/linux repo, it seems to extract to just 'linux' + the commit hash or tag.
 # Let's use the _srcname from PKGBUILD as a hint, which is 'archlinux-linux'.
 # Or more generically, for github archives, it's often <repo_name>-<stripped_tag>
-# The archlinux PKGBUILD uses _srcname=archlinux-linux.
-# The tarball from github for tag v6.14.2-arch1 extracts to 'linux-6.14.2-arch1'.
-# cbuild's 'extract' phase moves contents up if tarball has a single root dir.
-# So, build_wrksrc should not be set, allowing operations directly in self.srcdir.
+# The archlinux PKGBUILD uses _srcname=archlinux-linux and does `cd $_srcname`.
+# This implies the extracted source directory is expected to be 'archlinux-linux'.
+# We will assume the tarball from GitHub, when extracted by cbuild, results in this directory
+# or that cbuild's extraction logic for a tarball named with ">" might place it in a directory
+# that aligns with common conventions if the tarball itself has a different top-level dir name.
+# Let's try setting build_wrksrc to what the PKGBUILD expects.
+build_wrksrc = "archlinux-linux" # As per PKGBUILD's _srcname
 
 source = [
     f"https://github.com/archlinux/linux/archive/refs/tags/{{_srctag_for_archive}}.tar.gz>{{pkgname}}-{{pkgver}}-source.tar.gz"

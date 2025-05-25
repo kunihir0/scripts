@@ -196,24 +196,13 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
     else:
         _print_message("kernel_stuff_path not provided. No base arch-specific config copied to flavor directory.", level="info", indent=3)
 
-    _print_message("Setting up generic 'patches/' directory (e.g., for musl fixes)...", indent=2)
-    musl_patch_content = """--- a/tools/objtool/Makefile
-+++ b/tools/objtool/Makefile
-@@ -30,7 +30,7 @@
- INCLUDES := -I$(srctree)/tools/include \\
- 	    -I$(srctree)/tools/objtool/include \\
- 	    -I$(srctree)/tools/objtool/arch/$(SRCARCH)/include
--CFLAGS   := -Werror $(WARNINGS) $(KBUILD_HOSTCFLAGS) -g $(INCLUDES) $(LIBELF_FLAGS)
-+CFLAGS   := -Werror $(WARNINGS) $(KBUILD_HOSTCFLAGS) -g $(INCLUDES) $(LIBELF_FLAGS) -D__always_inline=inline
- LDFLAGS  += $(LIBELF_LIBS) $(LIBSUBCMD) $(KBUILD_HOSTLDFLAGS)
-"""
-    musl_patch_path = patches_dir / "0001-fix-musl-objtool.patch"
-    musl_patch_path.write_text(musl_patch_content)
-    _print_message(f"Created generic musl fix patch: {musl_patch_path}", indent=3)
+    # Removed the musl_patch_content and its writing, as it's likely outdated or problematic.
+    # If objtool issues arise with musl, a new patch specific to this kernel version and Chimera may be needed.
+    _print_message("Generic 'patches/' directory created (no default patches added by generator).", indent=2)
 
-    file_checksums = { 
+    file_checksums = {
         "mv-debug.sh": calculate_sha256(mv_debug_script_path),
-        "0001-fix-musl-objtool.patch": calculate_sha256(musl_patch_path),
+        # "0001-fix-musl-objtool.patch": calculate_sha256(musl_patch_path), # Removed
     }
     if copied_flavor_base_config and target_flavor_base_config_path.exists():
          file_checksums[f"files/{flavor_name}/{target_flavor_base_config_path.name}"] = calculate_sha256(target_flavor_base_config_path)

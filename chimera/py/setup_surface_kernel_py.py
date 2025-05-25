@@ -263,8 +263,11 @@ def pre_configure(self):
 
     # Surface archive is the third source; cbuild extracts it into self.chroot_sources_path.
     # The extracted directory name is based on the source filename after '>'.
-    surface_archive_source_filename = f"{{self.pkgname}}-{surface_archive_tag}-surface-sources.tar.gz" # surface_archive_tag from generator
-    surface_archive_extracted_dir_name = surface_archive_source_filename.removesuffix(".tar.gz")
+    # The source URL is: https://codeload.github.com/linux-surface/linux-surface/tar.gz/refs/tags/{surface_archive_tag}>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz
+    # GitHub codeload tarballs typically extract to a directory like 'reponame-tagname'.
+    # For linux-surface and tag 'arch-6.8.1-1', this would be 'linux-surface-arch-6.8.1-1'.
+    # This directory is created by cbuild inside self.chroot_sources_path.
+    surface_archive_extracted_dir_name = f"linux-surface-{surface_archive_tag}" # surface_archive_tag from generator
     surface_archive_root = self.chroot_sources_path / surface_archive_extracted_dir_name
     
     self.log(f"Kernel source directory (self.cwd): {{self.cwd}}")

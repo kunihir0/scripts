@@ -351,9 +351,9 @@ def _(self):
 
 pkgname = "{output_cport_name}"
 pkgver = "{pkgver}" 
-pkgrel = {pkgrel} 
+pkgrel = {pkgrel}
 
-pkgdesc = f"Linux kernel ({kernel_major_minor} series) with Surface patches from linux-surface project"
+pkgdesc = f"Linux kernel ({kernel_major_minor}) with patches for Microsoft Surface devices"
 archs = ["x86_64"]
 license = "GPL-2.0-only"
 url = "https://github.com/linux-surface/linux-surface"

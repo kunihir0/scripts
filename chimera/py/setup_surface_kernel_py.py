@@ -263,11 +263,10 @@ def pre_configure(self):
     main_kernel_patch_filename = f"patch-{{self.pkgver}}.xz"
     main_kernel_patch_full_path = self.chroot_sources_path / main_kernel_patch_filename
     
-    self.log(f"Checking for main kernel patch: {{main_kernel_patch_full_path}}")
-    if not self.path_exists(main_kernel_patch_full_path, is_file=True):
-        self.error(f"Main kernel patch {{main_kernel_patch_filename}} not found at {{main_kernel_patch_full_path}}")
+    self.log(f"Attempting to apply main kernel patch: {{main_kernel_patch_full_path}} to {{self.cwd}}")
+    # self.do() will fail if xzcat cannot find/read the patch file.
     
-    self.log(f"Applying main kernel patch: {{main_kernel_patch_filename}} to {{self.cwd}}")
+    # self.log(f"Applying main kernel patch: {{main_kernel_patch_filename}} to {{self.cwd}}") # Redundant log
     # Ensure we are in the kernel source directory for patching
     # self.cwd is already the kernel source directory in pre_configure
     self.do(f"xzcat {{main_kernel_patch_full_path}} | patch -Np1")

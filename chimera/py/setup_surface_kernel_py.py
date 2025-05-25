@@ -298,18 +298,32 @@ def pre_configure(self):
 
     # Apply Surface patches to the main kernel source (self.cwd)
     self.log(f"--- Applying Surface patches to {{self.cwd}} ---")
+    
+    # Diagnostic: Check if a key target file for the first patch exists
+    self.log(f"Checking for target file 'drivers/platform/surface/surface3-wmi.c' in {{self.cwd}}")
+    if (self.cwd / "drivers/platform/surface/surface3-wmi.c").is_file():
+        self.log("Target file 'drivers/platform/surface/surface3-wmi.c' FOUND.")
+    else:
+        self.log_warn("Target file 'drivers/platform/surface/surface3-wmi.c' NOT FOUND.")
+        self.log("Listing contents of {{self.cwd / 'drivers/platform/surface'}} (if it exists):")
+        if (self.cwd / "drivers/platform/surface").is_dir():
+            self.do("ls", "-la", self.cwd / "drivers/platform/surface")
+        else:
+            self.log_warn("Directory 'drivers/platform/surface' does not exist in {{self.cwd}}.")
+        self.log("Listing contents of {{self.cwd / 'drivers/platform'}} (if it exists):")
+        if (self.cwd / "drivers/platform").is_dir():
+            self.do("ls", "-la", self.cwd / "drivers/platform")
+        else:
+            self.log_warn("Directory 'drivers/platform' does not exist in {{self.cwd}}.")
+
+
     surface_patches_source_dir = surface_archive_root / "patches" / "{kernel_major_minor}"
     if surface_patches_source_dir.is_dir():
         patch_files = sorted(list(surface_patches_source_dir.glob("*.patch")))
         if patch_files:
             self.log(f"Applying {{len(patch_files)}} Surface patches from {{surface_patches_source_dir}}")
-            # self.cwd is the kernel source dir (e.g., /builddir/pkgname-pkgver in chroot where patch runs)
-            # surface_patches_source_dir is a host path like .../_surface_sources_extracted/patches/X.Y
-            # patch_file_obj is a host path like .../_surface_sources_extracted/patches/X.Y/0001-foo.patch
             for patch_file_obj_host in patch_files:
                 patch_file_name = patch_file_obj_host.name
-                # Construct the path relative to self.cwd for the 'patch -i' argument
-                # The patches are in _surface_sources_extracted/patches/{kernel_major_minor}/ within self.cwd
                 patch_input_path_str = f"_surface_sources_extracted/patches/{kernel_major_minor}/{{patch_file_name}}"
                 self.log(f"Applying patch: {{patch_input_path_str}}")
                 self.do("patch", "-Np1", "-i", patch_input_path_str)

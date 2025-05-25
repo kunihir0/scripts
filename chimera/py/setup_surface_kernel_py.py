@@ -279,12 +279,27 @@ def pre_configure(self):
     # GitHub codeload tarballs typically extract to a directory like 'reponame-tagname'.
     # For linux-surface and tag 'arch-6.8.1-1', this would be 'linux-surface-arch-6.8.1-1'.
     # This directory is created by cbuild inside self.chroot_sources_path.
-    surface_archive_extracted_dir_name = f"linux-surface-{surface_archive_tag}" # surface_archive_tag from generator
+    surface_archive_source_filename_in_sources = f"{{self.pkgname}}-{surface_archive_tag}-surface-sources.tar.gz" # Name as downloaded
+    surface_archive_full_path = self.chroot_sources_path / surface_archive_source_filename_in_sources
+
+    self.log(f"Surface archive tarball path: {{surface_archive_full_path}}")
+    if not surface_archive_full_path.is_file():
+        self.error(f"Surface archive tarball not found: {{surface_archive_full_path}}")
+
+    # Extract the surface archive into self.chroot_sources_path
+    # This should create a directory like 'linux-surface-arch-6.8.1-1' inside self.chroot_sources_path
+    self.log(f"Extracting {{surface_archive_full_path}} into {{self.chroot_sources_path}}")
+    self.do("tar", "xvf", surface_archive_full_path, "-C", self.chroot_sources_path)
+
+    # Expected top-level directory name inside the tarball
+    surface_archive_extracted_dir_name = f"linux-surface-{surface_archive_tag}" # e.g., linux-surface-arch-6.8.1-1
     surface_archive_root = self.chroot_sources_path / surface_archive_extracted_dir_name
     self.log(f"Attempting to use Surface archive extracted content root: {{surface_archive_root}}")
     
     if not surface_archive_root.is_dir():
-        self.error(f"Extracted Surface archive directory not found: {{surface_archive_root}}")
+        self.log(f"Listing contents of {{self.chroot_sources_path}} after extraction attempt:")
+        self.do("ls", "-la", self.chroot_sources_path)
+        self.error(f"Extracted Surface archive directory '{{surface_archive_extracted_dir_name}}' not found in {{self.chroot_sources_path}} after extraction.")
 
     # Apply Surface patches to the main kernel source (self.cwd)
     self.log(f"--- Applying Surface patches to {{self.cwd}} ---")

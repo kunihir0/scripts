@@ -83,7 +83,7 @@ def parse_arguments() -> argparse.Namespace:
         "--kernel-stuff-path", 
         type=pathlib.Path,
         default=None, 
-        help="Optional path to a directory containing a base kernel config file (e.g., 'config' or 'config.x86_64'). This will be copied to files/{FLAVOR}/config.{arch}."
+        help="Optional path to a directory containing a base kernel config file (e.g., 'config' or 'config.x86_64'). This will be copied to files/config-{arch}.{FLAVOR}."
     )
     parser.add_argument(
         "--output-name",
@@ -126,10 +126,9 @@ def setup_cport_directory(
 ) -> Dict[str, str]:
     target_cport_path = CPORTS_MAIN_DIR / output_cport_name
     files_dir = target_cport_path / "files"
-    patches_dir = target_cport_path / "patches" # For generic patches
+    patches_dir = target_cport_path / "patches" 
     
-    flavor_name = output_cport_name.replace("linux-", "") 
-    flavor_files_dir = files_dir / flavor_name 
+    flavor_name = output_cport_name.replace("linux-", "")
 
     if target_cport_path.exists():
         if force_overwrite:
@@ -143,7 +142,6 @@ def setup_cport_directory(
     target_cport_path.mkdir(parents=True)
     files_dir.mkdir()
     patches_dir.mkdir() 
-    flavor_files_dir.mkdir(exist_ok=True) 
 
     _print_message("Creating mv-debug.sh script...", indent=2)
     mv_debug_script_content = """#!/bin/sh
@@ -175,34 +173,39 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
     mv_debug_script_path.chmod(0o755)
     _print_message(f"mv-debug.sh created at {mv_debug_script_path}", indent=3)
 
-    _print_message(f"Preparing files/{flavor_name} directory for base config...", indent=2)
-    arch_for_config = pkgbuild_data.get('arch', 'x86_64') 
-    target_flavor_base_config_path = flavor_files_dir / f"config.{arch_for_config}"
-    copied_flavor_base_config = False
+    _print_message(f"Preparing files/ directory for base config (config-{{arch}}.{{flavor}})...", indent=2)
+    arch_for_config = pkgbuild_data.get('arch', 'x86_64')
+    target_config_in_files_dir = files_dir / f"config-{arch_for_config}.{flavor_name}"
+    copied_base_config_to_files = False
+
     if kernel_stuff_dir:
         base_config_src_generic = kernel_stuff_dir / "config"
-        base_config_src_arch = kernel_stuff_dir / f"config.{arch_for_config}"
+        base_config_src_arch = kernel_stuff_dir / f"config.{arch_for_config}" 
         chosen_base_config_src = None
-        if base_config_src_arch.is_file(): chosen_base_config_src = base_config_src_arch
-        elif base_config_src_generic.is_file(): chosen_base_config_src = base_config_src_generic
+
+        if base_config_src_arch.is_file():
+            chosen_base_config_src = base_config_src_arch
+        elif base_config_src_generic.is_file():
+            chosen_base_config_src = base_config_src_generic
 
         if chosen_base_config_src:
             sanitized_content = sanitize_config_file(chosen_base_config_src)
-            target_flavor_base_config_path.write_text(sanitized_content)
-            _print_message(f"Copied base config from {chosen_base_config_src} to {target_flavor_base_config_path}", indent=3)
-            copied_flavor_base_config = True
+            target_config_in_files_dir.write_text(sanitized_content)
+            _print_message(f"Copied base config from {chosen_base_config_src} to {target_config_in_files_dir}", indent=3)
+            copied_base_config_to_files = True
         else:
-            _print_message(f"Base config ('config' or 'config.{arch_for_config}') not found in {kernel_stuff_dir}.", level="warning", indent=3)
+            _print_message(f"Base config ('config' or 'config.{arch_for_config}') not found in {kernel_stuff_dir}. "
+                           f"No base config copied to files/.", level="warning", indent=3)
     else:
-        _print_message("kernel_stuff_path not provided. No base arch-specific config copied to flavor directory.", level="info", indent=3)
+        _print_message("kernel_stuff_path not provided. No base config copied to files/.", level="info", indent=3)
 
     _print_message("Generic 'patches/' directory created (no default patches added by generator).", indent=2)
 
     file_checksums = { 
         "mv-debug.sh": calculate_sha256(mv_debug_script_path),
     }
-    if copied_flavor_base_config and target_flavor_base_config_path.exists():
-         file_checksums[f"files/{flavor_name}/{target_flavor_base_config_path.name}"] = calculate_sha256(target_flavor_base_config_path)
+    if copied_base_config_to_files and target_config_in_files_dir.exists():
+         file_checksums[target_config_in_files_dir.name] = calculate_sha256(target_config_in_files_dir)
         
     return file_checksums
 
@@ -215,16 +218,13 @@ def generate_template_py_content(
     pkgrel = pkgbuild_data["pkgrel"] 
     surface_archive_tag = pkgbuild_data["surface_archive_tag"] 
     kernel_major_minor = pkgbuild_data["kernel_major_minor"]
-    kernel_major = kernel_major_minor.split('.')[0]
     
     flavor_name = output_cport_name.replace("linux-", "") 
 
     hostmakedepends_list = ["base-kernel-devel", "git"] 
     hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in sorted(list(set(hostmakedepends_list)))])
 
-    sha256_kernel_tar = "SHA256_LINUX_TAR_XZ_PLACEHOLDER"
-    sha256_kernel_patch = "SHA256_LINUX_PATCH_XZ_PLACEHOLDER" 
-    sha256_surface_archive = "SHA256_SURFACE_ARCHIVE_PLACEHOLDER"
+    sha256_surface_archive = "SHA256_SURFACE_ARCHIVE_PLACEHOLDER" # Only one source
 
     configure_args_list = [
         f"FLAVOR={flavor_name}",
@@ -242,147 +242,83 @@ make_env = {
     
     pre_configure_hook_str = f"""
 def pre_configure(self):
-    self.log(f"--- Starting pre_configure() for {{self.pkgname}} ---")
-    # self.cwd is build_wrksrc (kernel source dir) at this stage, as per cbuild hook execution.
-    
-    # Extract FLAVOR from self.configure_args
+    self.log(f"--- Starting pre_configure() for {{self.pkgname}} (FLAVOR: {{self.FLAVOR}}) ---")
+    # self.cwd is the root of the extracted linux-surface source tree.
+    # self.make_dir is 'build'. The final .config needs to be in self.cwd / self.make_dir / ".config"
+    # This is because chimera-buildkernel copies its CONFIG_FILE to $OBJDIR/.config,
+    # and $OBJDIR is self.make_dir (relative to self.cwd).
+
     flavor = None
     for arg in self.configure_args:
         if arg.startswith("FLAVOR="):
             flavor = arg.split("=")[1]
             break
     if not flavor:
-        self.error("FLAVOR not found in configure_args")
-    self.log(f"Determined FLAVOR: {{flavor}}")
+        self.error("FLAVOR not found in configure_args for pre_configure hook")
+
+    objdir_path = self.cwd / self.make_dir 
+    self.mkdir(objdir_path, parents=True) 
+    target_objdir_dot_config = objdir_path / ".config"
 
     self.log(f"Kernel source directory (self.cwd): {{self.cwd}}")
-    self.log(f"Chroot sources path (self.chroot_sources_path): {{self.chroot_sources_path}}")
+    self.log(f"Target OBJDIR for .config: {{objdir_path}}")
+
+    # 1. Base config from cport's files/ directory.
+    # chimera-buildkernel looks for files/config-{{arch}}.{{flavor}} or files/config-{{arch}}.
+    # This was prepared by setup_cport_directory.
+    base_config_from_files_name_flavored = f"config-{{self.profile().arch}}.{{flavor}}"
+    base_config_from_files_path_flavored = self.chroot_files_path / base_config_from_files_name_flavored
     
-    # Manually apply the main kernel patch first
-    # self.pkgver will be like "6.8.1", self.chroot_sources_path is like "/sources/pkgname-pkgver"
-    main_kernel_patch_filename = f"patch-{{self.pkgver}}.xz"
-    main_kernel_patch_full_path = self.chroot_sources_path / main_kernel_patch_filename
+    base_config_from_files_name_no_flavor = f"config-{{self.profile().arch}}"
+    base_config_from_files_path_no_flavor = self.chroot_files_path / base_config_from_files_name_no_flavor
     
-    self.log(f"Attempting to apply main kernel patch: {{main_kernel_patch_full_path}} to {{self.cwd}}")
-    # self.do() will fail if xzcat cannot find/read the patch file.
-    
-    # self.log(f"Applying main kernel patch: {{main_kernel_patch_filename}} to {{self.cwd}}") # Redundant log
-    # Ensure we are in the kernel source directory for patching
-    # self.cwd is already the kernel source directory in pre_configure
-    self.do(f"xzcat {{main_kernel_patch_full_path}} | patch -Np1")
-    self.log("Main kernel patch applied.")
+    initial_config_placed_in_objdir = False
 
-    self.log(f"Listing contents of {{self.chroot_sources_path}} before surface archive extraction:")
-    self.do("ls", "-la", self.chroot_sources_path)
-
-    # Surface archive is the third source.
-    # Name of the downloaded tarball in self.chroot_sources_path:
-    surface_archive_source_filename_in_sources = f"{{self.pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
-    surface_archive_full_path = self.chroot_sources_path / surface_archive_source_filename_in_sources
-
-    self.log(f"Surface archive tarball path: {{surface_archive_full_path}}")
-    # self.do below will fail if the tarball doesn't exist.
-
-    # Create a temporary directory within self.cwd (build_wrksrc, host perspective) for extraction
-    surface_extract_temp_dir_host_path = self.cwd / "_surface_sources_extracted"
-    self.mkdir(surface_extract_temp_dir_host_path)
-    self.log(f"Created temporary extraction directory (host path): {{surface_extract_temp_dir_host_path}}")
-
-    # tar is executed with self.cwd (host path of build_wrksrc) as its chdir.
-    # So, for -C, we provide the relative path to the temp dir.
-    tar_C_relative_path = "_surface_sources_extracted"
-
-    # Extract the surface archive into the temporary directory
-    # Using --strip-components=1 to get the contents of the 'linux-surface-arch-X.Y.Z-N' directory directly
-    self.log(f"Extracting {{surface_archive_full_path}} into {{tar_C_relative_path}} (relative to {{self.cwd}}) with --strip-components=1")
-    self.do(
-        "tar",
-        "xvf",
-        surface_archive_full_path, # This is already a chroot path from self.chroot_sources_path
-        "-C",
-        tar_C_relative_path,       # Use the relative path for -C
-        "--strip-components=1"
-    )
-
-    # For subsequent Python pathlib operations (like finding patches/configs), use the host-mapped path.
-    surface_archive_root = surface_extract_temp_dir_host_path
-    self.log(f"Using Surface archive extracted content root (host path for Python ops): {{surface_archive_root}}")
-    
-    if not surface_archive_root.is_dir(): # This check uses the host path
-        self.error(f"Temporary extraction directory '{{surface_archive_root}}' is not a directory (this should not happen).")
-
-    # Apply Surface patches to the main kernel source (self.cwd)
-    self.log(f"--- Applying Surface patches to {{self.cwd}} ---")
-    
-    # Diagnostic: Check if a key target file for the first patch exists
-    self.log(f"Checking for target file 'drivers/platform/surface/surface3-wmi.c' in {{self.cwd}}")
-    if (self.cwd / "drivers/platform/surface/surface3-wmi.c").is_file():
-        self.log("Target file 'drivers/platform/surface/surface3-wmi.c' FOUND.")
+    if base_config_from_files_path_flavored.is_file():
+        self.log(f"Using base config from template files: {{base_config_from_files_path_flavored}} -> {{target_objdir_dot_config}}")
+        self.do("cp", base_config_from_files_path_flavored, target_objdir_dot_config)
+        initial_config_placed_in_objdir = True
+    elif base_config_from_files_path_no_flavor.is_file():
+        self.log(f"Using base config from template files (no flavor suffix): {{base_config_from_files_path_no_flavor}} -> {{target_objdir_dot_config}}")
+        self.do("cp", base_config_from_files_path_no_flavor, target_objdir_dot_config)
+        initial_config_placed_in_objdir = True
     else:
-        self.log_warn("Target file 'drivers/platform/surface/surface3-wmi.c' NOT FOUND.")
-        self.log("Listing contents of {{self.cwd / 'drivers/platform/surface'}} (if it exists):")
-        if (self.cwd / "drivers/platform/surface").is_dir():
-            self.do("ls", "-la", self.cwd / "drivers/platform/surface")
-        else:
-            self.log_warn("Directory 'drivers/platform/surface' does not exist in {{self.cwd}}.")
-        self.log("Listing contents of {{self.cwd / 'drivers/platform'}} (if it exists):")
-        if (self.cwd / "drivers/platform").is_dir():
-            self.do("ls", "-la", self.cwd / "drivers/platform")
-        else:
-            self.log_warn("Directory 'drivers/platform' does not exist in {{self.cwd}}.")
+        self.log_warn(f"No base config found in template files (checked for {{base_config_from_files_name_flavored}} and {{base_config_from_files_name_no_flavor}}).")
 
+    # 2. Surface-specific config from the source tree (e.g., self.cwd/configs/surface-X.Y.config)
+    # This path is relative to self.cwd, which is the root of the linux-surface source.
+    surface_specific_config_in_src_path = self.cwd / "configs" / f"surface-{kernel_major_minor}.config"
 
-    surface_patches_source_dir = surface_archive_root / "patches" / "{kernel_major_minor}"
-    if surface_patches_source_dir.is_dir():
-        patch_files = sorted(list(surface_patches_source_dir.glob("*.patch")))
-        if patch_files:
-            self.log(f"Applying {{len(patch_files)}} Surface patches from {{surface_patches_source_dir}}")
-            for patch_file_obj_host in patch_files:
-                patch_file_name = patch_file_obj_host.name
-                patch_input_path_str = f"_surface_sources_extracted/patches/{kernel_major_minor}/{{patch_file_name}}"
-                self.log(f"Applying patch: {{patch_input_path_str}}")
-                self.do("patch", "-Np1", "-i", patch_input_path_str)
-        else:
-            self.log_warn(f"No .patch files found in {{surface_patches_source_dir}}")
-    else:
-        self.log_warn(f"Surface patches source directory not found: {{surface_patches_source_dir}}")
-
-    # Prepare .config in self.cwd (kernel source directory)
-    self.log(f"--- Preparing .config in {{self.cwd}} ---")
-    
-    base_config_src_in_template_files = self.chroot_files_path / flavor / f"config.{{self.profile().arch}}"
-    
-    initial_config_copied_to_cwd = False
-    if base_config_src_in_template_files.is_file():
-        self.log(f"Copying base config '{{base_config_src_in_template_files.name}}' from '{{base_config_src_in_template_files.parent}}' to {{self.cwd / '.config'}}")
-        self.do("cp", base_config_src_in_template_files, self.cwd / ".config")
-        initial_config_copied_to_cwd = True
-    else:
-        self.log_warn(f"No base config '{{base_config_src_in_template_files.name}}' found in {{base_config_src_in_template_files.parent}}.")
-
-    surface_specific_config_src = surface_archive_root / "configs" / f"surface-{kernel_major_minor}.config"
-    
-    if surface_specific_config_src.is_file():
-        if not initial_config_copied_to_cwd: 
-             self.log(f"No base .config, copying Surface config '{{surface_specific_config_src.name}}' as .config in {{self.cwd}}")
-             self.do("cp", surface_specific_config_src, self.cwd / ".config")
+    if surface_specific_config_in_src_path.is_file():
+        self.log(f"Found Surface-specific config in source tree: {{surface_specific_config_in_src_path}}")
+        if not initial_config_placed_in_objdir:
+            self.log(f"No base config from files, copying Surface config directly to {{target_objdir_dot_config}}")
+            self.do("cp", surface_specific_config_in_src_path, target_objdir_dot_config)
         else: 
-            self.log(f"Merging .config in {{self.cwd}} with Surface config '{{surface_specific_config_src.name}}'")
-            temp_surface_config_path = self.cwd / f".config.surface_fragment_for_merge"
-            self.do("cp", surface_specific_config_src, temp_surface_config_path)
-            merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(self.cwd / ".config")}}
-            self.do("./scripts/kconfig/merge_config.sh", "-m", ".config", temp_surface_config_path, env=merge_env)
-            self.rm(temp_surface_config_path)
-    else:
-        self.log_warn(f"Surface-specific config 'surface-{kernel_major_minor}.config' not found at {{surface_specific_config_src}}.")
+            self.log(f"Merging {{target_objdir_dot_config}} with Surface config (from {{surface_specific_config_in_src_path}})")
+            # merge_config.sh needs KCONFIG_CONFIG to point to the target .config file.
+            # The script itself is in self.cwd/scripts/kconfig/merge_config.sh
+            # The files to merge are target_objdir_dot_config (base) and surface_specific_config_in_src_path (fragment).
+            # We need to copy the fragment to objdir temporarily if merge_config.sh can't handle cross-dir paths well.
+            temp_surface_frag_in_objdir = objdir_path / ".config.surface_fragment"
+            self.do("cp", surface_specific_config_in_src_path, temp_surface_frag_in_objdir)
+            
+            merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(target_objdir_dot_config)}}
+            self.do(
+                self.cwd / "scripts/kconfig/merge_config.sh", # Path to merge_config.sh
+                "-m",
+                target_objdir_dot_config,  # Base config (already in objdir)
+                temp_surface_frag_in_objdir, # Fragment (copied to objdir)
+                env=merge_env
+            )
+            self.rm(temp_surface_frag_in_objdir) 
+    elif not initial_config_placed_in_objdir:
+        self.log_warn(f"No base config from files and no Surface-specific config in source tree found (at {{surface_specific_config_in_src_path}}).")
 
-    if not (self.cwd / ".config").is_file():
-        self.log_warn(f"No .config file present in {{self.cwd}} after attempting base and surface configs. Running 'make defconfig'.")
-        self.do("make", "defconfig", env=self.make_env)
-
-    # Clean up the temporary extraction directory using the host-mapped path
-    self.log(f"Cleaning up temporary extraction directory (host path): {{surface_extract_temp_dir_host_path}}")
-    self.rm(surface_extract_temp_dir_host_path, recursive=True)
+    if not target_objdir_dot_config.is_file():
+        self.log_warn(f"No .config prepared for OBJDIR ({{objdir_path}}). Running 'make defconfig' in OBJDIR.")
+        # CWD for self.do is self.cwd (kernel source root). O= points to make_dir (build subdir).
+        self.do("make", f"O={{self.make_dir}}", "defconfig", env=self.make_env)
 
     self.log(f"--- Finished pre_configure() for {{self.pkgname}} ---")
 """
@@ -417,7 +353,7 @@ pkgname = "{output_cport_name}"
 pkgver = "{pkgver}" 
 pkgrel = {pkgrel} 
 
-pkgdesc = f"Linux kernel ({kernel_major_minor} series) with Surface patches"
+pkgdesc = f"Linux kernel ({kernel_major_minor} series) with Surface patches from linux-surface project"
 archs = ["x86_64"]
 license = "GPL-2.0-only"
 url = "https://github.com/linux-surface/linux-surface"
@@ -425,16 +361,14 @@ url = "https://github.com/linux-surface/linux-surface"
 build_style = "linux-kernel"
 configure_args = [{configure_args_str}]
 make_dir = "build" 
+# build_wrksrc is derived by cbuild from the (now single) source URL.
+# It will be like 'linux-surface-arch-6.8.1-1'.
 
 source = [
-    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz",
-    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz", 
-    f"https://codeload.github.com/linux-surface/linux-surface/tar.gz/refs/tags/{surface_archive_tag}>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
+    f"https://codeload.github.com/linux-surface/linux-surface/tar.gz/refs/tags/{surface_archive_tag}>{{pkgname}}-{surface_archive_tag}-sources.tar.gz"
 ]
 sha256 = [
-    "{sha256_kernel_tar}", 
-    "{sha256_kernel_patch}", 
-    "{sha256_surface_archive}"
+    "{sha256_surface_archive}" # Only one checksum now
 ]
 
 hostmakedepends = [
@@ -560,14 +494,12 @@ def main() -> None:
     _print_message(f"New cport template for '{args.output_name}' created at:", indent=1)
     _print_message(f"  {CPORTS_MAIN_DIR / args.output_name}", indent=2, message_styles=["cyan"])
     _print_message("IMPORTANT: You need to update the 'sha256' list in the generated template.py:", level="warning", indent=1)
-    _print_message(f"  The 'sha256' list has three placeholder entries corresponding to the three URLs in the 'source' list:", indent=2)
-    _print_message(f"    1. Kernel.org base tarball (e.g., linux-{kernel_major_minor_for_main}.tar.xz)", indent=3) 
-    _print_message(f"    2. Kernel.org incremental patch (e.g., patch-{args.kernel_version}.xz)", indent=3) 
-    _print_message(f"    3. Linux-surface archive (e.g., {args.output_name}-{args.surface_archive_tag}-surface-sources.tar.gz)", indent=3) 
+    _print_message(f"  The 'sha256' list has one placeholder entry for the linux-surface archive:", indent=2)
+    _print_message(f"    1. Linux-surface archive (e.g., {args.output_name}-{args.surface_archive_tag}-sources.tar.gz)", indent=3) 
     _print_message(f"  To get the checksums:", indent=2)
     _print_message(f"    a. Run: ./cbuild fetch main/{args.output_name}", indent=3)
-    _print_message(f"    b. cbuild will download the files and print their SHA256 checksums (it might error if placeholders are still in use).", indent=3)
-    _print_message(f"    c. Edit '{target_template_py_path}' and replace the placeholders in the 'sha256' list with the correct checksums in the correct order.", indent=3)
+    _print_message(f"    b. cbuild will download the file and print its SHA256 checksum.", indent=3)
+    _print_message(f"    c. Edit '{target_template_py_path}' and replace the placeholder in the 'sha256' list with the correct checksum.", indent=3)
     _print_message("After updating the checksums, you can build the kernel with:", indent=1)
     _print_message(f"  ./cbuild pkg main/{args.output_name}", indent=2, message_styles=["green", "bold"])
     print("-" * 60)

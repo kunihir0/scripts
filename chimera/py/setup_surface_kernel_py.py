@@ -242,12 +242,7 @@ make_env = {
     
     pre_configure_hook_str = f"""
 def pre_configure(self):
-    self.log(f"--- Starting pre_configure() for {{self.pkgname}} (FLAVOR: {{self.FLAVOR}}) ---")
-    # self.cwd is the root of the extracted linux-surface source tree.
-    # self.make_dir is 'build'. The final .config needs to be in self.cwd / self.make_dir / ".config"
-    # This is because chimera-buildkernel copies its CONFIG_FILE to $OBJDIR/.config,
-    # and $OBJDIR is self.make_dir (relative to self.cwd).
-
+    # Extract FLAVOR from self.configure_args first
     flavor = None
     for arg in self.configure_args:
         if arg.startswith("FLAVOR="):
@@ -256,7 +251,13 @@ def pre_configure(self):
     if not flavor:
         self.error("FLAVOR not found in configure_args for pre_configure hook")
 
-    objdir_path = self.cwd / self.make_dir 
+    self.log(f"--- Starting pre_configure() for {{self.pkgname}} (flavor: {{flavor}}) ---")
+    # self.cwd is the root of the extracted linux-surface source tree.
+    # self.make_dir is 'build'. The final .config needs to be in self.cwd / self.make_dir / ".config"
+    # This is because chimera-buildkernel copies its CONFIG_FILE to $OBJDIR/.config,
+    # and $OBJDIR is self.make_dir (relative to self.cwd).
+
+    objdir_path = self.cwd / self.make_dir
     self.mkdir(objdir_path, parents=True) 
     target_objdir_dot_config = objdir_path / ".config"
 

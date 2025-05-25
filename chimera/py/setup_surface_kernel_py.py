@@ -455,8 +455,8 @@ def prepare(self):
     self.log(f"Chroot CWD (at start of prepare, should be build_wrksrc): {{self.chroot_cwd}}")
     self.log(f"self.build_wrksrc: {{self.build_wrksrc}}")
     self.log(f"self.chroot_sources_path: {{self.chroot_sources_path}}")
-    self.log(f"self.chroot_files_path: {{self.chroot_files_path}}")
-    self.log(f"self.files_path (host path to template files/): {{self.files_path}}")
+    self.log(f"self.files_path (host-mapped to chroot files dir): {{self.files_path}}")
+    self.log(f"self.template_dir / 'files' (alternative host path): {{self.template_dir / 'files'}}")
 
     self.log(f"Listing contents of {{self.chroot_sources_path}} (from chroot):")
     self.do("ls", "-la", self.chroot_sources_path, capture_output=True, check=False)
@@ -552,8 +552,8 @@ def prepare(self):
             self.do("make", "defconfig", env=self.make_env)
             self.log(f"Ran make defconfig.")
         else:
-            self.log(f"Using base config: {{host_base_config_file_var.name}} from {{self.chroot_files_path}} (chroot path for files dir)")
-            self.do("cp", self.chroot_files_path / host_base_config_file_var.name, ".config")
+            self.log(f"Using base config: {{host_base_config_file_var.name}} from {{host_base_config_file_var.parent}} (host path)")
+            self.do("cp", host_base_config_file_var, ".config")
             self.log(f"Copied base config to .config")
 
         if surface_config_chroot_path_var.is_file(): # Host-side check on chroot path

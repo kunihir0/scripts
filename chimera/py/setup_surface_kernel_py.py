@@ -61,7 +61,6 @@ PROJECT_ROOT_FROM_SCRIPT = SCRIPT_DIR.parent.parent
 
 WORKSPACE_ROOT = PROJECT_ROOT_FROM_SCRIPT 
 CPORTS_MAIN_DIR = WORKSPACE_ROOT / "chimera" / "cports" / "main"
-LINUX_SURFACE_REPO_PATH = WORKSPACE_ROOT / "chimera" / "linux-surface"
 DEFAULT_OUTPUT_CPORT_NAME = "linux-surface-generated"
 
 def parse_arguments() -> argparse.Namespace:
@@ -84,7 +83,7 @@ def parse_arguments() -> argparse.Namespace:
         "--kernel-stuff-path", 
         type=pathlib.Path,
         default=None, 
-        help="Optional path to a directory containing base kernel config files (e.g., 'config.x86_64')."
+        help="Optional path to a directory containing a base kernel config file (e.g., 'config' or 'config.x86_64'). This will be copied to files/{FLAVOR}/config.{arch}."
     )
     parser.add_argument(
         "--output-name",
@@ -112,29 +111,25 @@ def sanitize_config_file(file_path: pathlib.Path) -> str:
     except UnicodeDecodeError:
         _print_message(f"Warning: UTF-8 decode failed for {file_path.name}, trying latin-1", level="warning", indent=3)
         content = file_path.read_text(encoding='latin-1')
-    
     content = content.replace('\r\n', '\n').replace('\r', '\n')
-    
-    lines = []
-    for line in content.splitlines():
-        lines.append(line.rstrip())
-    
+    lines = [line.rstrip() for line in content.splitlines()]
     sanitized_content = '\n'.join(lines)
     if sanitized_content and not sanitized_content.endswith('\n'):
         sanitized_content += '\n'
-    
     return sanitized_content
 
 def setup_cport_directory(
     output_cport_name: str,
     force_overwrite: bool,
     kernel_stuff_dir: Optional[pathlib.Path], 
-    pkgbuild_data: Dict[str, Any], 
-    linux_surface_repo_base_path: pathlib.Path 
+    pkgbuild_data: Dict[str, Any]
 ) -> Dict[str, str]:
     target_cport_path = CPORTS_MAIN_DIR / output_cport_name
     files_dir = target_cport_path / "files"
-    patches_dir = target_cport_path / "patches" 
+    patches_dir = target_cport_path / "patches" # For generic patches like musl fix
+    
+    flavor_name = output_cport_name.replace("linux-", "") 
+    flavor_files_dir = files_dir / flavor_name # e.g., files/surface-generated/
 
     if target_cport_path.exists():
         if force_overwrite:
@@ -144,88 +139,35 @@ def setup_cport_directory(
             _print_message(f"Error: Cport directory {target_cport_path} already exists. Use --force to overwrite.", level="error")
             sys.exit(1)
     
-    _print_message(f"Creating cport directory: {target_cport_path}", indent=1)
+    _print_message(f"Creating cport directory structure: {target_cport_path}", indent=1)
     target_cport_path.mkdir(parents=True)
     files_dir.mkdir()
     patches_dir.mkdir() 
+    flavor_files_dir.mkdir(exist_ok=True) # For files/{FLAVOR}/config.{arch}
 
     _print_message("Creating mv-debug.sh script...", indent=2)
     mv_debug_script_content = """#!/bin/sh
 # mv-debug.sh - Helper to separate debug symbols for Chimera Linux
-
 set -e
-
-if [ -z "$1" ]; then
-    echo "Usage: $0 <file_to_process>"
-    exit 1
-fi
-
-mod="$1"
-debugdir_base="usr/lib/debug"
-mod_rel_path="${mod#./}" # Ensure it's a relative path for concatenation
-mod_debug_path="${debugdir_base}/${mod_rel_path}"
-
-OBJCOPY="${OBJCOPY:-llvm-objcopy}"
-STRIP="${STRIP:-llvm-strip}"
-
-if [ ! -f "$mod" ]; then
-    echo "Error: File '$mod' not found!"
-    exit 1
-fi
-
-echo "Processing '$mod' for debug symbols..."
-
-mkdir -p "$(dirname "$mod_debug_path")"
-
-if ! "$OBJCOPY" --only-keep-debug "$mod" "$mod_debug_path"; then
-    echo "Error: $OBJCOPY --only-keep-debug failed for '$mod'"
-    # exit 1 # Allow to continue if this fails for some files
-fi
-
-if ! "$OBJCOPY" --add-gnu-debuglink="$mod_debug_path" "$mod"; then
-    echo "Error: $OBJCOPY --add-gnu-debuglink failed for '$mod' (linking to $mod_debug_path)"
-    # exit 1
-fi
-
-if ! "$STRIP" --strip-debug "$mod"; then
-    echo "Error: $STRIP --strip-debug failed for '$mod'"
-    # exit 1
-fi
-
-compressed_debug_path=""
+if [ -z "$1" ]; then echo "Usage: $0 <file_to_process>"; exit 1; fi
+mod="$1"; debugdir_base="usr/lib/debug"; mod_rel_path="${mod#./}"; mod_debug_path="${debugdir_base}/${mod_rel_path}"
+OBJCOPY="${OBJCOPY:-llvm-objcopy}"; STRIP="${STRIP:-llvm-strip}"
+if [ ! -f "$mod" ]; then echo "Error: File '$mod' not found!"; exit 1; fi
+echo "Processing '$mod' for debug symbols..."; mkdir -p "$(dirname "$mod_debug_path")"
+if ! "$OBJCOPY" --only-keep-debug "$mod" "$mod_debug_path"; then echo "Error: $OBJCOPY --only-keep-debug failed for '$mod'"; fi
+if ! "$OBJCOPY" --add-gnu-debuglink="$mod_debug_path" "$mod"; then echo "Error: $OBJCOPY --add-gnu-debuglink failed for '$mod' (linking to $mod_debug_path)"; fi
+if ! "$STRIP" --strip-debug "$mod"; then echo "Error: $STRIP --strip-debug failed for '$mod'"; fi
+compressed_debug_path="";
 if command -v xz > /dev/null; then
-    if xz -T0 -zc "$mod_debug_path" > "${mod_debug_path}.xz"; then
-        rm "$mod_debug_path"
-        compressed_debug_path="${mod_debug_path}.xz"
-        echo "Compressed debug symbols to '${compressed_debug_path}'"
-    else
-        echo "Warning: xz compression failed for '$mod_debug_path'. Leaving uncompressed."
-    fi
+    if xz -T0 -zc "$mod_debug_path" > "${mod_debug_path}.xz"; then rm "$mod_debug_path"; compressed_debug_path="${mod_debug_path}.xz"; echo "Compressed debug symbols to '${compressed_debug_path}'"; else echo "Warning: xz compression failed for '$mod_debug_path'. Leaving uncompressed."; fi
 elif command -v gzip > /dev/null; then
-    if gzip -9nf "$mod_debug_path"; then
-        compressed_debug_path="${mod_debug_path}.gz" # .gz extension
-        rm "$mod_debug_path" # remove original after successful compression
-        echo "Compressed debug symbols to '${compressed_debug_path}'"
-    else
-        echo "Warning: gzip compression failed for '$mod_debug_path'. Leaving uncompressed."
-    fi
-else
-    echo "Warning: No xz or gzip found. Debug symbols for '$mod' will not be compressed."
-fi
-
-# Update debuglink only if compression happened and path changed
+    if gzip -9nf "$mod_debug_path"; then rm "$mod_debug_path"; compressed_debug_path="${mod_debug_path}.gz"; echo "Compressed debug symbols to '${compressed_debug_path}'"; else echo "Warning: gzip compression failed for '$mod_debug_path'. Leaving uncompressed."; fi
+else echo "Warning: No xz or gzip found. Debug symbols for '$mod' will not be compressed."; fi
 if [ -n "$compressed_debug_path" ] && [ "$compressed_debug_path" != "$mod_debug_path" ]; then
     echo "Updating debug link in '$mod' to point to '${compressed_debug_path}'"
-    # Strip old link first, then add new one
-    if ! "$OBJCOPY" --strip-gnu-debuglink "$mod"; then
-         echo "Warning: Failed to strip old gnu-debuglink from '$mod'. Link update might be problematic."
-    fi
-    if ! "$OBJCOPY" --add-gnu-debuglink="$compressed_debug_path" "$mod"; then
-        echo "Error: $OBJCOPY --add-gnu-debuglink failed for '$mod' (linking to ${compressed_debug_path})"
-        # exit 1
-    fi
+    if ! "$OBJCOPY" --strip-gnu-debuglink "$mod"; then echo "Warning: Failed to strip old gnu-debuglink from '$mod'. Link update might be problematic."; fi
+    if ! "$OBJCOPY" --add-gnu-debuglink="$compressed_debug_path" "$mod"; then echo "Error: $OBJCOPY --add-gnu-debuglink failed for '$mod' (linking to ${compressed_debug_path})"; fi
 fi
-
 echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-$mod_debug_path}'"
 """
     mv_debug_script_path = files_dir / "mv-debug.sh"
@@ -233,28 +175,28 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
     mv_debug_script_path.chmod(0o755)
     _print_message(f"mv-debug.sh created at {mv_debug_script_path}", indent=3)
 
-    _print_message("Copying and sanitizing configuration files...", indent=2)
-    
+    _print_message(f"Preparing files/{flavor_name} directory for base config...", indent=2)
     arch_for_config = pkgbuild_data.get('arch', 'x86_64') 
-    arch_specific_config_name = f"config.{arch_for_config}"
-    target_config_path_in_files = files_dir / arch_specific_config_name
-
+    target_flavor_base_config_path = flavor_files_dir / f"config.{arch_for_config}"
+    copied_flavor_base_config = False
     if kernel_stuff_dir:
-        base_config_to_copy = kernel_stuff_dir / "config" 
-        if not base_config_to_copy.is_file():
-            base_config_to_copy = kernel_stuff_dir / arch_specific_config_name
-        
-        if base_config_to_copy.is_file():
-            sanitized_content = sanitize_config_file(base_config_to_copy)
-            target_config_path_in_files.write_text(sanitized_content)
-            _print_message(f"Copied base config from {base_config_to_copy} to {target_config_path_in_files}", indent=3)
+        base_config_src_generic = kernel_stuff_dir / "config"
+        base_config_src_arch = kernel_stuff_dir / f"config.{arch_for_config}"
+        chosen_base_config_src = None
+        if base_config_src_arch.is_file(): chosen_base_config_src = base_config_src_arch
+        elif base_config_src_generic.is_file(): chosen_base_config_src = base_config_src_generic
+
+        if chosen_base_config_src:
+            sanitized_content = sanitize_config_file(chosen_base_config_src)
+            target_flavor_base_config_path.write_text(sanitized_content)
+            _print_message(f"Copied base config from {chosen_base_config_src} to {target_flavor_base_config_path}", indent=3)
+            copied_flavor_base_config = True
         else:
-             _print_message(f"Base config ('config' or '{arch_specific_config_name}') not found in {kernel_stuff_dir}. Template will need manual addition or rely on defconfig.", level="warning", indent=3)
-    else: 
-        _print_message("kernel_stuff_path not provided. Base 'config' will not be copied. Template will need a placeholder or manual addition.", level="info", indent=3)
-        
-    _print_message("Setting up 'patches/' directory for auto-applied critical patches (e.g., musl fixes)...", indent=2)
-    
+            _print_message(f"Base config ('config' or 'config.{arch_for_config}') not found in {kernel_stuff_dir}.", level="warning", indent=3)
+    else:
+        _print_message("kernel_stuff_path not provided. No base arch-specific config copied to flavor directory.", level="info", indent=3)
+
+    _print_message("Setting up generic 'patches/' directory (e.g., for musl fixes)...", indent=2)
     musl_patch_content = """--- a/tools/objtool/Makefile
 +++ b/tools/objtool/Makefile
 @@ -30,7 +30,7 @@
@@ -267,39 +209,40 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
 """
     musl_patch_path = patches_dir / "0001-fix-musl-objtool.patch"
     musl_patch_path.write_text(musl_patch_content)
-    _print_message(f"Created placeholder musl fix patch: {musl_patch_path}", indent=3)
+    _print_message(f"Created generic musl fix patch: {musl_patch_path}", indent=3)
 
     file_checksums = { 
         "mv-debug.sh": calculate_sha256(mv_debug_script_path),
         "0001-fix-musl-objtool.patch": calculate_sha256(musl_patch_path),
     }
-    if target_config_path_in_files.exists():
-        file_checksums[target_config_path_in_files.name] = calculate_sha256(target_config_path_in_files)
+    if copied_flavor_base_config and target_flavor_base_config_path.exists():
+         file_checksums[f"files/{flavor_name}/{target_flavor_base_config_path.name}"] = calculate_sha256(target_flavor_base_config_path)
         
     return file_checksums
 
 def generate_template_py_content(
     output_cport_name: str,
     pkgbuild_data: Dict[str, Any],
-    file_checksums: Dict[str, str]
+    file_checksums: Dict[str, str] 
 ) -> str:
     pkgver = pkgbuild_data["pkgver"] 
     pkgrel = pkgbuild_data["pkgrel"] 
     surface_archive_tag = pkgbuild_data["surface_archive_tag"] 
     kernel_major_minor = pkgbuild_data["kernel_major_minor"]
     kernel_major = kernel_major_minor.split('.')[0]
+    
+    flavor_name = output_cport_name.replace("linux-", "") 
 
-    chimera_hostmakedepends = ["base-kernel-devel", "git"] 
-    hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in sorted(list(set(chimera_hostmakedepends)))])
+    hostmakedepends_list = ["base-kernel-devel", "git"] 
+    hostmakedepends_list_str = ", ".join([f'"{dep}"' for dep in sorted(list(set(hostmakedepends_list)))])
 
     sha256_kernel_tar = "SHA256_LINUX_TAR_XZ_PLACEHOLDER"
     sha256_kernel_patch = "SHA256_LINUX_PATCH_XZ_PLACEHOLDER" 
     sha256_surface_archive = "SHA256_SURFACE_ARCHIVE_PLACEHOLDER"
 
     configure_args_list = [
+        f"FLAVOR={flavor_name}",
         f"RELEASE={pkgrel}",
-        # Potentially add FLAVOR or other args if linux-kernel style supports them for surface
-        # For now, surface-specific setup is in post_extract
     ]
     configure_args_str = ", ".join([f'"{arg}"' for arg in configure_args_list])
 
@@ -308,141 +251,107 @@ make_env = {
     "KBUILD_BUILD_USER": "chimera",
     "KBUILD_BUILD_HOST": "chimera.linux",
     "LDFLAGS": "", 
-    # "CBUILD_BYPASS_STRIP_WRAPPER": "1", # If needed
 }"""
     processed_make_env_block = textwrap.dedent(make_env_block_raw).strip()
     
-    # Variables for f-string interpolation within post_extract_hook_str
-    # These are evaluated when the generator script runs.
-    # Double braces {{ and }} become single braces in the output string,
-    # which cbuild then interpolates at template execution time.
-    # Quadruple braces {{{{ and }}}} become double braces in the output string,
-    # which then become single braces after cbuild's interpolation (for f-strings inside f-strings).
+    # This hook runs after sources are extracted and generic patches (from template's patches/ dir) are applied.
+    # It prepares the kernel source tree with Surface-specific patches and configuration
+    # before the linux-kernel build style's 'configure' step (which calls chimera-buildkernel prepare).
+    pre_configure_hook_str = f"""
+def pre_configure(self):
+    self.log(f"--- Starting pre_configure() for {{self.pkgname}} (FLAVOR: {{self.FLAVOR}}) ---")
+    # self.cwd is build_wrksrc (kernel source dir) at this stage, as per cbuild hook execution.
     
-    # This value will be directly embedded into the generated script.
-    localversion_config_val_for_gen = f"-{output_cport_name.replace('linux-', '')}"
-    # This string, when written to the template, will be: f"-r{{self.pkgrel}}"
-    # which means cbuild will interpolate self.pkgrel.
-    pkgrel_file_content_val_for_gen = f"-r{{{{self.pkgrel}}}}"
-
-
-    post_extract_hook_str = f"""
-def post_extract(self):
-    self.log(f"--- Starting post_extract() for {{self.pkgname}} {{self.pkgver}}-{{self.pkgrel}} ---")
-    self.log(f"Chroot CWD (at start of post_extract): {{self.chroot_cwd}}")
-    self.log(f"self.build_wrksrc (where kernel source is expected): {{self.build_wrksrc}}")
-    self.log(f"self.chroot_sources_path (where tarballs are): {{self.chroot_sources_path}}")
-
-    kernel_source_dir = self.chroot_cwd / self.build_wrksrc 
-    self.log(f"Full path to kernel source dir: {{kernel_source_dir}}")
-
-    self.log(f"Listing contents of {{self.chroot_sources_path}} (from chroot):")
-    self.do("ls", "-la", self.chroot_sources_path, capture_output=True, check=False)
-    self.log(f"Listing contents of {{kernel_source_dir}} before patching (from chroot):")
-    self.do("ls", "-la", kernel_source_dir, capture_output=True, check=False)
-
-    # 1. Apply main kernel patch (patch-{pkgver}.xz)
-    self.log("--- Applying main kernel patch (manual due to '!' in source) ---")
-    patch_filename = f"patch-{pkgver}.xz" # pkgver from outer scope
-    kernel_patch_file = self.chroot_sources_path / patch_filename
-    self.log(f"Main kernel patch file (chroot path): {{kernel_patch_file}}")
-    if not kernel_patch_file.is_file(): # Host-side check on mapped path
-        self.error(f"Kernel patch {{patch_filename}} not found at {{kernel_patch_file}}")
+    # Surface archive is the third source; cbuild extracts it into self.chroot_sources_path.
+    # The extracted directory name is based on the source filename after '>'.
+    surface_archive_source_filename = f"{{self.pkgname}}-{surface_archive_tag}-surface-sources.tar.gz" # surface_archive_tag from generator
+    surface_archive_extracted_dir_name = surface_archive_source_filename.removesuffix(".tar.gz")
+    surface_archive_root = self.chroot_sources_path / surface_archive_extracted_dir_name
     
-    with self.pushd(kernel_source_dir):
-        self.log(f"Current dir for main patch: {{self.chroot_cwd}}")
-        self.do("xzcat", kernel_patch_file, stdout_to_file="main_kernel.patch")
-        self.do("patch", "-Np1", "-i", "main_kernel.patch")
-        self.rm("main_kernel.patch")
-        self.log(f"Main kernel patch applied.")
+    self.log(f"Kernel source directory (self.cwd): {{self.cwd}}")
+    self.log(f"Surface archive extracted content root (chroot): {{surface_archive_root}}")
 
-        if not (self.chroot_cwd / ".git").is_dir():
-            self.log("Initializing git repository for patching...")
-            self.do("git", "init")
-            self.do("git", "config", "--local", "user.email", "cbuild@chimera-linux.org")
-            self.do("git", "config", "--local", "user.name", "cbuild")
-            self.do("git", "add", ".")
-            self.do("git", "commit", "--allow-empty", "-m", "Initial cbuild commit after main kernel patch")
+    if not surface_archive_root.is_dir():
+        self.error(f"Extracted Surface archive directory not found: {{surface_archive_root}}")
 
-    # 2. Apply Surface patches
-    self.log(f"--- Applying Surface patches ---")
-    surface_archive_name = f"{{self.pkgname}}-{surface_archive_tag}-surface-sources.tar.gz" # surface_archive_tag from outer scope
-    # The surface archive itself is in chroot_sources_path.
-    # It extracts to a directory like 'linux-surface-arch-6.8.1-1' (using the tag)
-    # *inside* chroot_sources_path, NOT alongside build_wrksrc.
-    surface_extracted_dirname = f"linux-surface-{surface_archive_tag}" # surface_archive_tag from outer scope
-    surface_archive_extract_root = self.chroot_sources_path / surface_extracted_dirname
-    
-    surface_patches_subdir = surface_archive_extract_root / "patches" / "{kernel_major_minor}" # kernel_major_minor from outer scope
-    self.log(f"Surface patches subdir (chroot path): {{surface_patches_subdir}}")
-
-    if surface_patches_subdir.is_dir(): # Host-side check
-        patch_files = sorted(list(surface_patches_subdir.glob("*.patch")))
-        self.log(f"Found {{len(patch_files)}} Surface patch files: {{[p.name for p in patch_files]}}")
-        with self.pushd(kernel_source_dir):
-            self.log(f"Current dir for surface patches: {{self.chroot_cwd}}")
-            for patch_file_item in patch_files:
-                self.log(f"Applying Surface patch {{patch_file_item.name}}...")
-                # patch_file_item is a host path to a file in the chroot_sources_path mapped area
-                self.do("patch", "-Np1", "-i", patch_file_item)
-    else:
-        self.log_warn(f"Surface patches directory not found: {{surface_patches_subdir}}")
-
-    # 3. Merge configurations
-    self.log(f"--- Merging kernel configurations ---")
-    with self.pushd(kernel_source_dir):
-        self.log(f"Current dir for config merge: {{self.chroot_cwd}}")
-        
-        # Base config from template's files/ directory
-        host_base_config_src = self.files_path / f"config.{{self.profile().arch}}"
-        
-        # Surface config from extracted surface archive
-        surface_config_src = surface_archive_extract_root / "configs" / f"surface-{kernel_major_minor}.config" # kernel_major_minor from outer scope
-
-        if not host_base_config_src.is_file(): # Host-side check
-            self.log_warn(f"Base config '{{host_base_config_src.name}}' not found in {{self.files_path}}. Attempting defconfig.")
-            self.do("make", "defconfig", env=self.make_env)
+    # Apply Surface patches to the main kernel source (self.cwd)
+    self.log(f"--- Applying Surface patches to {{self.cwd}} ---")
+    surface_patches_source_dir = surface_archive_root / "patches" / "{kernel_major_minor}" # kernel_major_minor from generator
+    if surface_patches_source_dir.is_dir():
+        patch_files = sorted(list(surface_patches_source_dir.glob("*.patch")))
+        if patch_files:
+            self.log(f"Applying {{len(patch_files)}} Surface patches from {{surface_patches_source_dir}}")
+            for patch_file in patch_files:
+                self.do("patch", "-Np1", "-i", surface_patches_source_dir / patch_file.name)
         else:
-            self.log(f"Using base config: {{host_base_config_src.name}}")
-            self.do("cp", host_base_config_src, ".config") # cbuild maps self.files_path
+            self.log_warn(f"No .patch files found in {{surface_patches_source_dir}}")
+    else:
+        self.log_warn(f"Surface patches source directory not found: {{surface_patches_source_dir}}")
 
-        if surface_config_src.is_file(): # Host-side check
-            self.log(f"Merging with Surface config: {{surface_config_src.name}}")
-            self.do("cp", surface_config_src, ".config.surface") # surface_config_src is already a chroot path
-            merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(self.chroot_cwd / ".config")}}
+    # Prepare .config in self.cwd (kernel source directory)
+    self.log(f"--- Preparing .config in {{self.cwd}} ---")
+    
+    # 1. Base config (e.g., files/surface-generated/config.x86_64)
+    # This file was prepared by the generator script into the cport's files/FLAVOR/ directory.
+    # self.chroot_files_path points to the root of the template's files/ directory in chroot.
+    # self.FLAVOR is available as it's set by configure_args.
+    base_config_src_in_template_files = self.chroot_files_path / self.FLAVOR / f"config.{{self.profile().arch}}"
+    
+    initial_config_copied = False
+    if base_config_src_in_template_files.is_file():
+        self.log(f"Copying base config '{{base_config_src_in_template_files.name}}' from '{{base_config_src_in_template_files.parent}}' to .config")
+        self.do("cp", base_config_src_in_template_files, ".config")
+        initial_config_copied = True
+    else:
+        self.log_warn(f"No base config '{{base_config_src_in_template_files.name}}' found in {{base_config_src_in_template_files.parent}}.")
+
+    # 2. Surface-specific config fragment from the extracted archive
+    surface_specific_config_src = surface_archive_root / "configs" / f"surface-{kernel_major_minor}.config" # kernel_major_minor from generator
+    if surface_specific_config_src.is_file():
+        if not initial_config_copied: # If no base config, use surface config as the base .config
+             self.log(f"No base .config, copying Surface config '{{surface_specific_config_src.name}}' as .config")
+             self.do("cp", surface_specific_config_src, ".config")
+             initial_config_copied = True
+        else: # Merge if .config already exists from base_config_src_in_template_files
+            self.log(f"Merging .config with Surface config '{{surface_specific_config_src.name}}'")
+            self.do("cp", surface_specific_config_src, ".config.surface")
+            # KCONFIG_CONFIG needs to be set for merge_config.sh to output to the right .config
+            merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(self.cwd / ".config")}}
             self.do("./scripts/kconfig/merge_config.sh", "-m", ".config", ".config.surface", env=merge_env)
             self.rm(".config.surface")
-        else:
-            self.log_warn(f"Surface-specific config '{{surface_config_src.name}}' not found. Using base/defconfig only.")
+    else:
+        self.log_warn(f"Surface-specific config 'surface-{kernel_major_minor}.config' not found at {{surface_specific_config_src}}.")
 
-        # 4. Set CONFIG_LOCALVERSION and create localversion.10-pkgrel
-        self.log(f"--- Setting CONFIG_LOCALVERSION ---")
-        self.do("scripts/config", "--enable", "CONFIG_LOCALVERSION_AUTO", env=self.make_env)
-        # Use value defined in generator's scope, embedded as a literal string
-        self.log(f"Setting CONFIG_LOCALVERSION to '{localversion_config_val_for_gen}'")
-        self.do("scripts/config", "--set-str", "CONFIG_LOCALVERSION", "{localversion_config_val_for_gen}", env=self.make_env)
-        
-        # Use value defined in generator's scope, which itself contains {{self.pkgrel}} for cbuild
-        self.log(f"Writing '{pkgrel_file_content_val_for_gen}' to localversion.10-pkgrel")
-        self.do("sh", "-c", f"echo '{pkgrel_file_content_val_for_gen}' > localversion.10-pkgrel")
+    if not initial_config_copied and not surface_specific_config_src.is_file():
+        self.log_warn(f"No base config and no surface config found. chimera-buildkernel prepare will likely run 'make defconfig'.")
+        # To ensure chimera-buildkernel prepare doesn't fail on missing CONFIG_FILE, we could make a defconfig here.
+        # However, the chimera-buildkernel script itself copies CONFIG_FILE to .config if CONFIG_FILE is valid.
+        # If CONFIG_FILE (e.g. config-x86_64 or config-x86_64.surface-generated) is not found by chimera-buildkernel, it errors.
+        # So, this hook *must* ensure a .config exists if we don't want chimera-buildkernel to error out before it can defconfig.
+        # Let's ensure a .config exists, even if it's from defconfig, if no other config was found.
+        if not (self.cwd / ".config").is_file():
+            self.log("Ensuring a .config exists by running 'make defconfig' as fallback.")
+            self.do("make", "defconfig", env=self.make_env)
 
-        # 5. Finalize .config
-        self.log(f"--- Finalizing .config with make olddefconfig ---")
-        self.do("make", "olddefconfig", env=self.make_env)
-        
-        # 6. Generate kernelrelease version file (for self.localversion)
-        self.log(f"--- Generating kernelrelease version file (version) ---")
-        self.do("make", "kernelrelease", "-s", stdout_to_file="version", env=self.make_env)
-        kernelrelease_val = (self.chroot_cwd / "version").read_text().strip()
-        self.log(f"Generated KERNELRELEASE: {{kernelrelease_val}}")
-        if kernelrelease_val.startswith(self.pkgver):
-            self.localversion = kernelrelease_val.replace(self.pkgver, "", 1)
-        else:
-            self.log_warn(f"KERNELRELEASE '{{kernelrelease_val}}' does not start with pkgver '{{self.pkgver}}'. Cannot set localversion accurately.")
-            self.localversion = "" 
-        self.log(f"Set self.localversion to: '{{self.localversion}}'")
 
-    self.log(f"--- Finished post_extract() for {{self.pkgname}} ---")
+    # The linux-kernel build style's 'configure' step (which calls chimera-buildkernel prepare)
+    # will now use this prepared .config. It is expected to handle:
+    # - Running 'make oldconfig' (which it does after copying CONFIG_FILE to $OBJDIR/.config)
+    # - Setting CONFIG_LOCALVERSION (based on FLAVOR and RELEASE from configure_args)
+    # - Creating localversion.10-pkgrel (This is NOT done by chimera-buildkernel, so we might need it here or post_configure)
+    # - Running 'make kernelrelease' and setting self.localversion (This is NOT done by chimera-buildkernel prepare)
+    
+    # Let's add localversion file creation here as chimera-buildkernel doesn't do it.
+    # This is needed for self.version to be set correctly by the build style.
+    # The CONFIG_LOCALVERSION itself is set by chimera-buildkernel.
+    # localversion_val_for_file = f"-{pkgrel}-{flavor_name}" # This is what chimera-buildkernel sets CONFIG_LOCALVERSION to
+    # (self.cwd / "localversion.10-pkgrel").write_text(f"{{localversion_val_for_file}}\\n")
+    # self.log(f"Created localversion.10-pkgrel with content: {{localversion_val_for_file}}")
+    # Actually, chimera-buildkernel sets CONFIG_LOCALVERSION based on FLAVOR and RELEASE.
+    # The build style's do_configure then calls linux.gen_version_file(self) which runs make kernelrelease.
+    # So, we should not need to do this manually here.
+
+    self.log(f"--- Finished pre_configure() for {{self.pkgname}} ---")
 """
 
     devel_subpackage_str = f"""
@@ -480,12 +389,14 @@ url = "https://github.com/linux-surface/linux-surface"
 
 build_style = "linux-kernel"
 configure_args = [{configure_args_str}]
-make_dir = "build" 
-# build_wrksrc is typically set by linux-kernel style, e.g., to 'linux-{pkgver_major_minor}'
+make_dir = "build" # OBJDIR for chimera-buildkernel, typically 'build'
 
+# The linux-kernel build style expects the main kernel source (linux-X.Y.tar.xz)
+# and the main kernel patch (patch-X.Y.Z.xz) to be handled by its 'prepare' step.
+# The third source (surface archive) is handled by our pre_configure hook.
 source = [
     f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz",
-    f"!https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz",
+    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz", # No '!', build style should apply
     f"https://codeload.github.com/linux-surface/linux-surface/tar.gz/refs/tags/{surface_archive_tag}>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
 ]
 sha256 = [
@@ -511,7 +422,7 @@ options = [
 ]
 
 {processed_make_env_block}
-{post_extract_hook_str}
+{pre_configure_hook_str}
 {devel_subpackage_str}
 {dbg_subpackage_str}
 """
@@ -533,7 +444,6 @@ def main() -> None:
         "pkgrel": "0", 
         "surface_archive_tag": args.surface_archive_tag,
         "kernel_major_minor": kernel_major_minor_for_main, 
-        "makedepends": [], 
         "arch": "x86_64" 
     }
 
@@ -550,8 +460,7 @@ def main() -> None:
         args.output_name,
         args.force,
         args.kernel_stuff_path, 
-        pkgbuild_data_main, 
-        LINUX_SURFACE_REPO_PATH 
+        pkgbuild_data_main
     )
     _print_message("Cport directory and files prepared.", level="success", indent=1)
 

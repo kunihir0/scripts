@@ -268,20 +268,29 @@ def pre_configure(self):
     self.log(f"Surface archive tarball path: {{surface_archive_full_path}}")
     # self.do below will fail if the tarball doesn't exist.
 
-    # Extract the surface archive into self.chroot_sources_path
-    self.log(f"Extracting {{surface_archive_full_path}} into {{self.chroot_sources_path}}")
-    self.do("tar", "xvf", surface_archive_full_path, "-C", self.chroot_sources_path)
+    # Create a temporary directory within self.cwd (build_wrksrc) for extraction
+    surface_extract_temp_dir = self.cwd / "_surface_sources_extracted" # Use self.cwd
+    self.mkdir(surface_extract_temp_dir)
+    self.log(f"Created temporary extraction directory: {{surface_extract_temp_dir}}")
 
-    # Expected top-level directory name inside the tarball after extraction
-    # GitHub archives for tags are typically 'reponame-tag', e.g., 'linux-surface-arch-6.8.1-1'
-    surface_archive_extracted_dir_name = f"linux-surface-{surface_archive_tag}"
-    surface_archive_root = self.chroot_sources_path / surface_archive_extracted_dir_name
+    # Extract the surface archive into the temporary directory
+    # Using --strip-components=1 to get the contents of the 'linux-surface-arch-X.Y.Z-N' directory directly
+    self.log(f"Extracting {{surface_archive_full_path}} into {{surface_extract_temp_dir}} with --strip-components=1")
+    self.do(
+        "tar",
+        "xvf",
+        surface_archive_full_path,
+        "-C",
+        surface_extract_temp_dir, # Extract here
+        "--strip-components=1"
+    )
+
+    # The contents of the archive are now directly in surface_extract_temp_dir
+    surface_archive_root = surface_extract_temp_dir # This is now the root of the extracted files
+    self.log(f"Using Surface archive extracted content root: {{surface_archive_root}}")
     
-    self.log(f"Attempting to use Surface archive extracted content root: {{surface_archive_root}}")
     if not surface_archive_root.is_dir():
-        self.log(f"Listing contents of {{self.chroot_sources_path}} after extraction attempt:")
-        self.do("ls", "-la", self.chroot_sources_path)
-        self.error(f"Extracted Surface archive directory '{{surface_archive_extracted_dir_name}}' not found in {{self.chroot_sources_path}} after extraction.")
+        self.error(f"Temporary extraction directory '{{surface_archive_root}}' is not a directory (this should not happen).")
 
     # Apply Surface patches to the main kernel source (self.cwd)
     self.log(f"--- Applying Surface patches to {{self.cwd}} ---")
@@ -329,6 +338,10 @@ def pre_configure(self):
     if not (self.cwd / ".config").is_file():
         self.log_warn(f"No .config file present in {{self.cwd}} after attempting base and surface configs. Running 'make defconfig'.")
         self.do("make", "defconfig", env=self.make_env)
+
+    # Clean up the temporary extraction directory
+    self.log(f"Cleaning up temporary extraction directory: {{surface_extract_temp_dir}}")
+    self.rm(surface_extract_temp_dir, recursive=True)
 
     self.log(f"--- Finished pre_configure() for {{self.pkgname}} ---")
 """

@@ -126,10 +126,10 @@ def setup_cport_directory(
 ) -> Dict[str, str]:
     target_cport_path = CPORTS_MAIN_DIR / output_cport_name
     files_dir = target_cport_path / "files"
-    patches_dir = target_cport_path / "patches" # For generic patches like musl fix
+    patches_dir = target_cport_path / "patches" # For generic patches
     
     flavor_name = output_cport_name.replace("linux-", "") 
-    flavor_files_dir = files_dir / flavor_name # e.g., files/surface-generated/
+    flavor_files_dir = files_dir / flavor_name 
 
     if target_cport_path.exists():
         if force_overwrite:
@@ -143,7 +143,7 @@ def setup_cport_directory(
     target_cport_path.mkdir(parents=True)
     files_dir.mkdir()
     patches_dir.mkdir() 
-    flavor_files_dir.mkdir(exist_ok=True) # For files/{FLAVOR}/config.{arch}
+    flavor_files_dir.mkdir(exist_ok=True) 
 
     _print_message("Creating mv-debug.sh script...", indent=2)
     mv_debug_script_content = """#!/bin/sh
@@ -196,13 +196,10 @@ echo "Successfully processed '$mod'. Debug symbols in '${compressed_debug_path:-
     else:
         _print_message("kernel_stuff_path not provided. No base arch-specific config copied to flavor directory.", level="info", indent=3)
 
-    # Removed the musl_patch_content and its writing, as it's likely outdated or problematic.
-    # If objtool issues arise with musl, a new patch specific to this kernel version and Chimera may be needed.
     _print_message("Generic 'patches/' directory created (no default patches added by generator).", indent=2)
 
-    file_checksums = {
+    file_checksums = { 
         "mv-debug.sh": calculate_sha256(mv_debug_script_path),
-        # "0001-fix-musl-objtool.patch": calculate_sha256(musl_patch_path), # Removed
     }
     if copied_flavor_base_config and target_flavor_base_config_path.exists():
          file_checksums[f"files/{flavor_name}/{target_flavor_base_config_path.name}"] = calculate_sha256(target_flavor_base_config_path)
@@ -243,9 +240,6 @@ make_env = {
 }"""
     processed_make_env_block = textwrap.dedent(make_env_block_raw).strip()
     
-    # This hook runs after sources are extracted and generic patches (from template's patches/ dir) are applied.
-    # It prepares the kernel source tree with Surface-specific patches and configuration
-    # before the linux-kernel build style's 'configure' step (which calls chimera-buildkernel prepare).
     pre_configure_hook_str = f"""
 def pre_configure(self):
     self.log(f"--- Starting pre_configure() for {{self.pkgname}} ---")
@@ -261,25 +255,14 @@ def pre_configure(self):
         self.error("FLAVOR not found in configure_args")
     self.log(f"Determined FLAVOR: {{flavor}}")
 
-    # Surface archive is the third source; cbuild extracts it into self.chroot_sources_path.
-    # The extracted directory name is based on the source filename after '>'.
-    # The source URL is: https://codeload.github.com/linux-surface/linux-surface/tar.gz/refs/tags/{surface_archive_tag}>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz
-    # GitHub codeload tarballs typically extract to a directory like 'reponame-tagname'.
-    # For linux-surface and tag 'arch-6.8.1-1', this would be 'linux-surface-arch-6.8.1-1'.
-    # This directory is created by cbuild inside self.chroot_sources_path.
-    surface_archive_extracted_dir_name = f"linux-surface-{surface_archive_tag}" # surface_archive_tag from generator
-    surface_archive_root = self.chroot_sources_path / surface_archive_extracted_dir_name
-    
     self.log(f"Kernel source directory (self.cwd): {{self.cwd}}")
     self.log(f"Chroot sources path (self.chroot_sources_path): {{self.chroot_sources_path}}")
-    self.log(f"Listing contents of {{self.chroot_sources_path}}:")
+    self.log(f"Listing contents of {{self.chroot_sources_path}} before surface archive extraction:")
     self.do("ls", "-la", self.chroot_sources_path)
 
-    # The source URL is: https://codeload.github.com/linux-surface/linux-surface/tar.gz/refs/tags/{surface_archive_tag}>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz
-    # GitHub codeload tarballs typically extract to a directory like 'reponame-tagname'.
-    # For linux-surface and tag 'arch-6.8.1-1', this would be 'linux-surface-arch-6.8.1-1'.
-    # This directory is created by cbuild inside self.chroot_sources_path.
-    surface_archive_source_filename_in_sources = f"{{self.pkgname}}-{surface_archive_tag}-surface-sources.tar.gz" # Name as downloaded
+    # Surface archive is the third source.
+    # Name of the downloaded tarball in self.chroot_sources_path:
+    surface_archive_source_filename_in_sources = f"{{self.pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
     surface_archive_full_path = self.chroot_sources_path / surface_archive_source_filename_in_sources
 
     self.log(f"Surface archive tarball path: {{surface_archive_full_path}}")
@@ -287,15 +270,15 @@ def pre_configure(self):
         self.error(f"Surface archive tarball not found: {{surface_archive_full_path}}")
 
     # Extract the surface archive into self.chroot_sources_path
-    # This should create a directory like 'linux-surface-arch-6.8.1-1' inside self.chroot_sources_path
     self.log(f"Extracting {{surface_archive_full_path}} into {{self.chroot_sources_path}}")
     self.do("tar", "xvf", surface_archive_full_path, "-C", self.chroot_sources_path)
 
-    # Expected top-level directory name inside the tarball
-    surface_archive_extracted_dir_name = f"linux-surface-{surface_archive_tag}" # e.g., linux-surface-arch-6.8.1-1
+    # Expected top-level directory name inside the tarball after extraction
+    # GitHub archives for tags are typically 'reponame-tag', e.g., 'linux-surface-arch-6.8.1-1'
+    surface_archive_extracted_dir_name = f"linux-surface-{surface_archive_tag}"
     surface_archive_root = self.chroot_sources_path / surface_archive_extracted_dir_name
-    self.log(f"Attempting to use Surface archive extracted content root: {{surface_archive_root}}")
     
+    self.log(f"Attempting to use Surface archive extracted content root: {{surface_archive_root}}")
     if not surface_archive_root.is_dir():
         self.log(f"Listing contents of {{self.chroot_sources_path}} after extraction attempt:")
         self.do("ls", "-la", self.chroot_sources_path)
@@ -303,7 +286,7 @@ def pre_configure(self):
 
     # Apply Surface patches to the main kernel source (self.cwd)
     self.log(f"--- Applying Surface patches to {{self.cwd}} ---")
-    surface_patches_source_dir = surface_archive_root / "patches" / "{kernel_major_minor}" # kernel_major_minor from generator
+    surface_patches_source_dir = surface_archive_root / "patches" / "{kernel_major_minor}"
     if surface_patches_source_dir.is_dir():
         patch_files = sorted(list(surface_patches_source_dir.glob("*.patch")))
         if patch_files:
@@ -318,8 +301,6 @@ def pre_configure(self):
     # Prepare .config in self.cwd (kernel source directory)
     self.log(f"--- Preparing .config in {{self.cwd}} ---")
     
-    # 1. Base config (e.g., files/surface-generated/config.x86_64)
-    # This file was prepared by the generator script into the cport's files/FLAVOR/ directory.
     base_config_src_in_template_files = self.chroot_files_path / flavor / f"config.{{self.profile().arch}}"
     
     initial_config_copied_to_cwd = False
@@ -330,47 +311,25 @@ def pre_configure(self):
     else:
         self.log_warn(f"No base config '{{base_config_src_in_template_files.name}}' found in {{base_config_src_in_template_files.parent}}.")
 
-    # 2. Surface-specific config fragment from the extracted archive
-    surface_specific_config_src = surface_archive_root / "configs" / f"surface-{kernel_major_minor}.config" # kernel_major_minor from generator
+    surface_specific_config_src = surface_archive_root / "configs" / f"surface-{kernel_major_minor}.config"
     
     if surface_specific_config_src.is_file():
-        if not initial_config_copied_to_cwd:
+        if not initial_config_copied_to_cwd: 
              self.log(f"No base .config, copying Surface config '{{surface_specific_config_src.name}}' as .config in {{self.cwd}}")
              self.do("cp", surface_specific_config_src, self.cwd / ".config")
-             # initial_config_copied_to_cwd = True # Mark that a .config now exists
-        else:
+        else: 
             self.log(f"Merging .config in {{self.cwd}} with Surface config '{{surface_specific_config_src.name}}'")
-            # Copy surface config to a temporary name in cwd for merging
-            temp_surface_config_path = self.cwd / f".config.surface_fragment_for_merge" # Use a clear temp name
+            temp_surface_config_path = self.cwd / f".config.surface_fragment_for_merge"
             self.do("cp", surface_specific_config_src, temp_surface_config_path)
             merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(self.cwd / ".config")}}
             self.do("./scripts/kconfig/merge_config.sh", "-m", ".config", temp_surface_config_path, env=merge_env)
-            self.rm(temp_surface_config_path) # Clean up the temporary surface config file
+            self.rm(temp_surface_config_path)
     else:
         self.log_warn(f"Surface-specific config 'surface-{kernel_major_minor}.config' not found at {{surface_specific_config_src}}.")
 
-    # Fallback to defconfig if no .config was created by previous steps
     if not (self.cwd / ".config").is_file():
         self.log_warn(f"No .config file present in {{self.cwd}} after attempting base and surface configs. Running 'make defconfig'.")
         self.do("make", "defconfig", env=self.make_env)
-
-    # At this point, self.cwd / ".config" should be the desired merged configuration.
-    # The linux-kernel build style's 'configure' step (which calls chimera-buildkernel prepare)
-    # will now use this prepared .config. It is expected to handle:
-    # - Running 'make oldconfig' (which it does after copying CONFIG_FILE to $OBJDIR/.config)
-    # - Setting CONFIG_LOCALVERSION (based on FLAVOR and RELEASE from configure_args)
-    # - Creating localversion.10-pkgrel (This is NOT done by chimera-buildkernel, so we might need it here or post_configure)
-    # - Running 'make kernelrelease' and setting self.localversion (This is NOT done by chimera-buildkernel prepare)
-    
-    # Let's add localversion file creation here as chimera-buildkernel doesn't do it.
-    # This is needed for self.version to be set correctly by the build style.
-    # The CONFIG_LOCALVERSION itself is set by chimera-buildkernel.
-    # localversion_val_for_file = f"-{pkgrel}-{flavor_name}" # This is what chimera-buildkernel sets CONFIG_LOCALVERSION to
-    # (self.cwd / "localversion.10-pkgrel").write_text(f"{{localversion_val_for_file}}\\n")
-    # self.log(f"Created localversion.10-pkgrel with content: {{localversion_val_for_file}}")
-    # Actually, chimera-buildkernel sets CONFIG_LOCALVERSION based on FLAVOR and RELEASE.
-    # The build style's do_configure then calls linux.gen_version_file(self) which runs make kernelrelease.
-    # So, we should not need to do this manually here.
 
     self.log(f"--- Finished pre_configure() for {{self.pkgname}} ---")
 """
@@ -410,14 +369,11 @@ url = "https://github.com/linux-surface/linux-surface"
 
 build_style = "linux-kernel"
 configure_args = [{configure_args_str}]
-make_dir = "build" # OBJDIR for chimera-buildkernel, typically 'build'
+make_dir = "build" 
 
-# The linux-kernel build style expects the main kernel source (linux-X.Y.tar.xz)
-# and the main kernel patch (patch-X.Y.Z.xz) to be handled by its 'prepare' step.
-# The third source (surface archive) is handled by our pre_configure hook.
 source = [
     f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_major_minor}.tar.xz",
-    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz", # No '!', build style should apply
+    f"https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/patch-{pkgver}.xz", 
     f"https://codeload.github.com/linux-surface/linux-surface/tar.gz/refs/tags/{surface_archive_tag}>{{pkgname}}-{surface_archive_tag}-surface-sources.tar.gz"
 ]
 sha256 = [

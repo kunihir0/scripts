@@ -267,11 +267,13 @@ def pre_configure(self):
     # 1. Base config from cport's files/ directory.
     # chimera-buildkernel looks for files/config-{{arch}}.{{flavor}} or files/config-{{arch}}.
     # This was prepared by setup_cport_directory.
+    chroot_files_dir_path = self.template_path / "files" # Correct way to get chroot path to files/
+
     base_config_from_files_name_flavored = f"config-{{self.profile().arch}}.{{flavor}}"
-    base_config_from_files_path_flavored = self.chroot_files_path / base_config_from_files_name_flavored
+    base_config_from_files_path_flavored = chroot_files_dir_path / base_config_from_files_name_flavored
     
     base_config_from_files_name_no_flavor = f"config-{{self.profile().arch}}"
-    base_config_from_files_path_no_flavor = self.chroot_files_path / base_config_from_files_name_no_flavor
+    base_config_from_files_path_no_flavor = chroot_files_dir_path / base_config_from_files_name_no_flavor
     
     initial_config_placed_in_objdir = False
 

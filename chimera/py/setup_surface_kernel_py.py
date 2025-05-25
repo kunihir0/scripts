@@ -273,19 +273,19 @@ def pre_configure(self):
     self.mkdir(surface_extract_temp_dir_host_path)
     self.log(f"Created temporary extraction directory (host path): {{surface_extract_temp_dir_host_path}}")
 
-    # For tar's -C argument, we need the path as seen from *inside* the chroot.
-    # self.chroot_wrksrc is the chroot path to self.cwd (e.g., /builddir/pkgname-pkgver)
-    tar_C_chroot_path = self.chroot_wrksrc / "_surface_sources_extracted"
+    # tar is executed with self.cwd (host path of build_wrksrc) as its chdir.
+    # So, for -C, we provide the relative path to the temp dir.
+    tar_C_relative_path = "_surface_sources_extracted"
 
     # Extract the surface archive into the temporary directory
     # Using --strip-components=1 to get the contents of the 'linux-surface-arch-X.Y.Z-N' directory directly
-    self.log(f"Extracting {{surface_archive_full_path}} into (chroot path) {{tar_C_chroot_path}} with --strip-components=1")
+    self.log(f"Extracting {{surface_archive_full_path}} into {{tar_C_relative_path}} (relative to {{self.cwd}}) with --strip-components=1")
     self.do(
         "tar",
         "xvf",
         surface_archive_full_path, # This is already a chroot path from self.chroot_sources_path
         "-C",
-        tar_C_chroot_path,         # Use the chroot path for -C
+        tar_C_relative_path,       # Use the relative path for -C
         "--strip-components=1"
     )
 

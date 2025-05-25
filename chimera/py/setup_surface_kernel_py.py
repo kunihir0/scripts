@@ -248,9 +248,19 @@ make_env = {
     # before the linux-kernel build style's 'configure' step (which calls chimera-buildkernel prepare).
     pre_configure_hook_str = f"""
 def pre_configure(self):
-    self.log(f"--- Starting pre_configure() for {{self.pkgname}} (FLAVOR: {{self.FLAVOR}}) ---")
+    self.log(f"--- Starting pre_configure() for {{self.pkgname}} ---")
     # self.cwd is build_wrksrc (kernel source dir) at this stage, as per cbuild hook execution.
     
+    # Extract FLAVOR from self.configure_args
+    flavor = None
+    for arg in self.configure_args:
+        if arg.startswith("FLAVOR="):
+            flavor = arg.split("=")[1]
+            break
+    if not flavor:
+        self.error("FLAVOR not found in configure_args")
+    self.log(f"Determined FLAVOR: {{flavor}}")
+
     # Surface archive is the third source; cbuild extracts it into self.chroot_sources_path.
     # The extracted directory name is based on the source filename after '>'.
     surface_archive_source_filename = f"{{self.pkgname}}-{surface_archive_tag}-surface-sources.tar.gz" # surface_archive_tag from generator
@@ -282,47 +292,41 @@ def pre_configure(self):
     
     # 1. Base config (e.g., files/surface-generated/config.x86_64)
     # This file was prepared by the generator script into the cport's files/FLAVOR/ directory.
-    # self.chroot_files_path points to the root of the template's files/ directory in chroot.
-    # self.FLAVOR is available as it's set by configure_args.
-    base_config_src_in_template_files = self.chroot_files_path / self.FLAVOR / f"config.{{self.profile().arch}}"
+    base_config_src_in_template_files = self.chroot_files_path / flavor / f"config.{{self.profile().arch}}"
     
-    initial_config_copied = False
+    initial_config_copied_to_cwd = False
     if base_config_src_in_template_files.is_file():
-        self.log(f"Copying base config '{{base_config_src_in_template_files.name}}' from '{{base_config_src_in_template_files.parent}}' to .config")
-        self.do("cp", base_config_src_in_template_files, ".config")
-        initial_config_copied = True
+        self.log(f"Copying base config '{{base_config_src_in_template_files.name}}' from '{{base_config_src_in_template_files.parent}}' to {{self.cwd / '.config'}}")
+        self.do("cp", base_config_src_in_template_files, self.cwd / ".config")
+        initial_config_copied_to_cwd = True
     else:
         self.log_warn(f"No base config '{{base_config_src_in_template_files.name}}' found in {{base_config_src_in_template_files.parent}}.")
 
     # 2. Surface-specific config fragment from the extracted archive
     surface_specific_config_src = surface_archive_root / "configs" / f"surface-{kernel_major_minor}.config" # kernel_major_minor from generator
+    
     if surface_specific_config_src.is_file():
-        if not initial_config_copied: # If no base config, use surface config as the base .config
-             self.log(f"No base .config, copying Surface config '{{surface_specific_config_src.name}}' as .config")
-             self.do("cp", surface_specific_config_src, ".config")
-             initial_config_copied = True
-        else: # Merge if .config already exists from base_config_src_in_template_files
-            self.log(f"Merging .config with Surface config '{{surface_specific_config_src.name}}'")
-            self.do("cp", surface_specific_config_src, ".config.surface")
-            # KCONFIG_CONFIG needs to be set for merge_config.sh to output to the right .config
+        if not initial_config_copied_to_cwd:
+             self.log(f"No base .config, copying Surface config '{{surface_specific_config_src.name}}' as .config in {{self.cwd}}")
+             self.do("cp", surface_specific_config_src, self.cwd / ".config")
+             # initial_config_copied_to_cwd = True # Mark that a .config now exists
+        else:
+            self.log(f"Merging .config in {{self.cwd}} with Surface config '{{surface_specific_config_src.name}}'")
+            # Copy surface config to a temporary name in cwd for merging
+            temp_surface_config_path = self.cwd / f".config.surface_fragment_for_merge" # Use a clear temp name
+            self.do("cp", surface_specific_config_src, temp_surface_config_path)
             merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(self.cwd / ".config")}}
-            self.do("./scripts/kconfig/merge_config.sh", "-m", ".config", ".config.surface", env=merge_env)
-            self.rm(".config.surface")
+            self.do("./scripts/kconfig/merge_config.sh", "-m", ".config", temp_surface_config_path, env=merge_env)
+            self.rm(temp_surface_config_path) # Clean up the temporary surface config file
     else:
         self.log_warn(f"Surface-specific config 'surface-{kernel_major_minor}.config' not found at {{surface_specific_config_src}}.")
 
-    if not initial_config_copied and not surface_specific_config_src.is_file():
-        self.log_warn(f"No base config and no surface config found. chimera-buildkernel prepare will likely run 'make defconfig'.")
-        # To ensure chimera-buildkernel prepare doesn't fail on missing CONFIG_FILE, we could make a defconfig here.
-        # However, the chimera-buildkernel script itself copies CONFIG_FILE to .config if CONFIG_FILE is valid.
-        # If CONFIG_FILE (e.g. config-x86_64 or config-x86_64.surface-generated) is not found by chimera-buildkernel, it errors.
-        # So, this hook *must* ensure a .config exists if we don't want chimera-buildkernel to error out before it can defconfig.
-        # Let's ensure a .config exists, even if it's from defconfig, if no other config was found.
-        if not (self.cwd / ".config").is_file():
-            self.log("Ensuring a .config exists by running 'make defconfig' as fallback.")
-            self.do("make", "defconfig", env=self.make_env)
+    # Fallback to defconfig if no .config was created by previous steps
+    if not (self.cwd / ".config").is_file():
+        self.log_warn(f"No .config file present in {{self.cwd}} after attempting base and surface configs. Running 'make defconfig'.")
+        self.do("make", "defconfig", env=self.make_env)
 
-
+    # At this point, self.cwd / ".config" should be the desired merged configuration.
     # The linux-kernel build style's 'configure' step (which calls chimera-buildkernel prepare)
     # will now use this prepared .config. It is expected to handle:
     # - Running 'make oldconfig' (which it does after copying CONFIG_FILE to $OBJDIR/.config)

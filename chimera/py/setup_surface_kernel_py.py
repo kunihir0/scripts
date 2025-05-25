@@ -266,9 +266,7 @@ def pre_configure(self):
     surface_archive_full_path = self.chroot_sources_path / surface_archive_source_filename_in_sources
 
     self.log(f"Surface archive tarball path: {{surface_archive_full_path}}")
-    # Use self.path_exists for chroot-aware file checking
-    if not self.path_exists(surface_archive_full_path, is_file=True):
-        self.error(f"Surface archive tarball not found (checked with self.path_exists): {{surface_archive_full_path}}")
+    # self.do below will fail if the tarball doesn't exist.
 
     # Extract the surface archive into self.chroot_sources_path
     self.log(f"Extracting {{surface_archive_full_path}} into {{self.chroot_sources_path}}")

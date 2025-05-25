@@ -242,6 +242,10 @@ make_env = {
     
     pre_configure_hook_str = f"""
 def pre_configure(self):
+    # Log the contents of self.chroot_cwd (where chimera-buildkernel will run)
+    self.log(f"Contents of self.chroot_cwd ({{self.chroot_cwd}}):")
+    self.do("ls", "-la", self.chroot_cwd)
+
     # Extract FLAVOR from self.configure_args first
     flavor = None
     for arg in self.configure_args:

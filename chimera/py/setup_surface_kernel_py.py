@@ -303,8 +303,15 @@ def pre_configure(self):
         patch_files = sorted(list(surface_patches_source_dir.glob("*.patch")))
         if patch_files:
             self.log(f"Applying {{len(patch_files)}} Surface patches from {{surface_patches_source_dir}}")
-            for patch_file in patch_files:
-                self.do("patch", "-Np1", "-i", surface_patches_source_dir / patch_file.name)
+            # self.cwd is the kernel source dir (e.g., /builddir/pkgname-pkgver in chroot)
+            # Patches are in self.cwd / "_surface_sources_extracted" / "patches" / ... (host perspective)
+            # For the patch command running in self.cwd (chroot), the path to the patch is relative from there.
+            relative_patch_dir_for_cmd = pathlib.Path("_surface_sources_extracted") / "patches" / "{kernel_major_minor}"
+            for patch_file_obj in patch_files: # patch_file_obj is a Path object from globbing surface_patches_source_dir
+                patch_file_name = patch_file_obj.name
+                patch_path_for_cmd = relative_patch_dir_for_cmd / patch_file_name
+                self.log(f"Applying patch: {{patch_path_for_cmd}}")
+                self.do("patch", "-Np1", "-i", patch_path_for_cmd)
         else:
             self.log_warn(f"No .patch files found in {{surface_patches_source_dir}}")
     else:

@@ -276,51 +276,53 @@ def pre_configure(self):
     base_config_from_files_path_no_flavor = chroot_files_dir_path / base_config_from_files_name_no_flavor
     
     initial_config_placed_in_objdir = False
+    
+    # Paths for commands running in chroot (passed to self.do)
+    target_objdir_dot_config_chroot = self.chroot_cwd / self.make_dir / ".config"
 
-    if base_config_from_files_path_flavored.is_file():
-        self.log(f"Using base config from template files: {{base_config_from_files_path_flavored}} -> {{target_objdir_dot_config}}")
-        self.do("cp", base_config_from_files_path_flavored, target_objdir_dot_config)
+    if base_config_from_files_path_flavored.is_file(): # Python check on host path
+        self.log(f"Using base config from template files: {{base_config_from_files_path_flavored}} -> {{target_objdir_dot_config_chroot}}")
+        self.do("cp", base_config_from_files_path_flavored, target_objdir_dot_config_chroot)
         initial_config_placed_in_objdir = True
-    elif base_config_from_files_path_no_flavor.is_file():
-        self.log(f"Using base config from template files (no flavor suffix): {{base_config_from_files_path_no_flavor}} -> {{target_objdir_dot_config}}")
-        self.do("cp", base_config_from_files_path_no_flavor, target_objdir_dot_config)
+    elif base_config_from_files_path_no_flavor.is_file(): # Python check on host path
+        self.log(f"Using base config from template files (no flavor suffix): {{base_config_from_files_path_no_flavor}} -> {{target_objdir_dot_config_chroot}}")
+        self.do("cp", base_config_from_files_path_no_flavor, target_objdir_dot_config_chroot)
         initial_config_placed_in_objdir = True
     else:
         self.log_warn(f"No base config found in template files (checked for {{base_config_from_files_name_flavored}} and {{base_config_from_files_name_no_flavor}}).")
 
     # 2. Surface-specific config from the source tree (e.g., self.cwd/configs/surface-X.Y.config)
-    # This path is relative to self.cwd, which is the root of the linux-surface source.
-    surface_specific_config_in_src_path = self.cwd / "configs" / f"surface-{kernel_major_minor}.config"
+    surface_specific_config_in_src_host_path = self.cwd / "configs" / f"surface-{kernel_major_minor}.config" # For Python .is_file()
+    surface_specific_config_in_src_chroot_path = self.chroot_cwd / "configs" / f"surface-{kernel_major_minor}.config" # For cp source
 
-    if surface_specific_config_in_src_path.is_file():
-        self.log(f"Found Surface-specific config in source tree: {{surface_specific_config_in_src_path}}")
+    if surface_specific_config_in_src_host_path.is_file(): # Python check on host path
+        self.log(f"Found Surface-specific config in source tree: {{surface_specific_config_in_src_host_path}}")
         if not initial_config_placed_in_objdir:
-            self.log(f"No base config from files, copying Surface config directly to {{target_objdir_dot_config}}")
-            self.do("cp", surface_specific_config_in_src_path, target_objdir_dot_config)
-        else: 
-            self.log(f"Merging {{target_objdir_dot_config}} with Surface config (from {{surface_specific_config_in_src_path}})")
-            # merge_config.sh needs KCONFIG_CONFIG to point to the target .config file.
-            # The script itself is in self.cwd/scripts/kconfig/merge_config.sh
-            # The files to merge are target_objdir_dot_config (base) and surface_specific_config_in_src_path (fragment).
-            # We need to copy the fragment to objdir temporarily if merge_config.sh can't handle cross-dir paths well.
-            temp_surface_frag_in_objdir = objdir_path / ".config.surface_fragment"
-            self.do("cp", surface_specific_config_in_src_path, temp_surface_frag_in_objdir)
+            self.log(f"No base config from files, copying Surface config directly to {{target_objdir_dot_config_chroot}}")
+            self.do("cp", surface_specific_config_in_src_chroot_path, target_objdir_dot_config_chroot)
+        else:
+            self.log(f"Merging {{target_objdir_dot_config_chroot}} with Surface config (from {{surface_specific_config_in_src_chroot_path}})")
             
-            merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(target_objdir_dot_config)}}
+            temp_surface_frag_in_objdir_chroot = self.chroot_cwd / self.make_dir / ".config.surface_fragment"
+            self.do("cp", surface_specific_config_in_src_chroot_path, temp_surface_frag_in_objdir_chroot)
+            
+            merge_env = {{**self.make_env, "KCONFIG_CONFIG": str(target_objdir_dot_config_chroot)}}
+            # merge_config.sh is in self.chroot_cwd / "scripts/kconfig/merge_config.sh"
+            # target_objdir_dot_config_chroot is the base
+            # temp_surface_frag_in_objdir_chroot is the fragment
             self.do(
-                self.cwd / "scripts/kconfig/merge_config.sh", # Path to merge_config.sh
+                self.chroot_cwd / "scripts/kconfig/merge_config.sh",
                 "-m",
-                target_objdir_dot_config,  # Base config (already in objdir)
-                temp_surface_frag_in_objdir, # Fragment (copied to objdir)
+                target_objdir_dot_config_chroot,
+                temp_surface_frag_in_objdir_chroot,
                 env=merge_env
             )
-            self.rm(temp_surface_frag_in_objdir) 
+            self.rm(objdir_path / ".config.surface_fragment") # rm uses host path
     elif not initial_config_placed_in_objdir:
-        self.log_warn(f"No base config from files and no Surface-specific config in source tree found (at {{surface_specific_config_in_src_path}}).")
+        self.log_warn(f"No base config from files and no Surface-specific config in source tree found (at {{surface_specific_config_in_src_host_path}}).")
 
-    if not target_objdir_dot_config.is_file():
+    if not target_objdir_dot_config.is_file(): # Python check on host path
         self.log_warn(f"No .config prepared for OBJDIR ({{objdir_path}}). Running 'make defconfig' in OBJDIR.")
-        # CWD for self.do is self.cwd (kernel source root). O= points to make_dir (build subdir).
         self.do("make", f"O={{self.make_dir}}", "defconfig", env=self.make_env)
 
     self.log(f"--- Finished pre_configure() for {{self.pkgname}} ---")

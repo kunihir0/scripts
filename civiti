@@ -1,0 +1,658 @@
+#!/usr/bin/env python3
+
+import sys
+import argparse
+import time
+import urllib.request
+import json
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs, unquote
+import os
+import threading
+import shutil
+import re
+try:
+    from safetensors import safe_open # For corruption check
+    SAFETENSORS_AVAILABLE = True
+except ImportError:
+    SAFETENSORS_AVAILABLE = False
+
+# --- API Constants & Global Config ---
+CIVITAI_API_V1_BASE_URL = "https://civitai.com/api/v1"
+CIVITAI_API_DOWNLOAD_BASE_URL = "https://civitai.com/api/download/models/"
+USER_AGENT = 'Mozilla/5.0 (GiniStyleDownloader/3.5.2-corruption-check; Python)' # Version bump
+CHUNK_SIZE = 1024 * 256 
+DOWNLOAD_THREADS_DEFAULT = 4
+MIN_SIZE_FOR_PARALLEL_MB = 10
+API_TIMEOUT = 25
+CDN_INFO_TIMEOUT = 15
+
+# --- ComfyUI Directory Mapping ---
+COMFYUI_MODEL_TYPE_TO_DIR = {
+    "checkpoint": "checkpoints",
+    "lora": "loras",
+    "textualinversion": "embeddings", 
+    "embedding": "embeddings",       
+    "controlnet": "controlnet",
+    "hypernetwork": "hypernetworks",
+    "vae": "vae",
+    "upscaler": "upscale_models", 
+    "upscalemodel": "upscale_models", 
+    "aestheticgradient": "style_models", 
+    "poses": "poses", 
+    "clipvision": "clip_vision",
+    "unet": "unet",
+    "stylemodel": "style_models", 
+    "unknown_type_default": "other_models" 
+}
+
+# --- Gini Style Guide Elements ---
+COLORS = { 
+    "reset": "\033[0m", "bold": "\033[1m", "italic": "\033[3m", "underline": "\033[4m",
+    "pink": "\033[38;5;219m", "purple": "\033[38;5;183m", "cyan": "\033[38;5;123m",
+    "yellow": "\033[38;5;228m", "green": "\033[38;5;156m", "red": "\033[38;5;210m",
+    "blue": "\033[38;5;111m", "light_blue": "\033[38;5;159m", "lavender": "\033[38;5;147m",
+    "grey": "\033[38;5;245m"
+}
+STATUS_SYMBOLS = { 
+    "success": f"{COLORS['green']}✓{COLORS['reset']}", "warning": f"{COLORS['yellow']}!{COLORS['reset']}",
+    "error": f"{COLORS['red']}✗{COLORS['reset']}", "info": f"{COLORS['cyan']}✧{COLORS['reset']}",
+    "query": f"{COLORS.get('lavender','\033[38;5;147m')}?{COLORS['reset']}",
+}
+BRAILLE_SPINNER_CHARS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+CLEAR_ENTIRE_LINE_AND_RETURN_ANSI = "\033[2K\r"
+CLEAR_LINE_FROM_CURSOR_ANSI = "\033[K"
+ANSI_ESCAPE_PATTERN = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+# --- Helper Functions (Assume these are complete from previous versions) ---
+def get_terminal_width(default=80):
+    return shutil.get_terminal_size(fallback=(default, 24))[0]
+
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_PATTERN.sub('', text)
+
+def typing_effect(text: str, speed: float = 0.015, color: str = "reset", newline: bool = True):
+    styled_text = f"{COLORS.get(color, '')}{text}{COLORS['reset']}"
+    for char in styled_text: sys.stdout.write(char); sys.stdout.flush(); time.sleep(speed)
+    if newline: sys.stdout.write('\n')
+
+def gradient_text(text: str, color_keys: list):
+    result = []; num_colors = len(color_keys)
+    if not text or not color_keys: return text + COLORS['reset']
+    for i, char in enumerate(text):
+        color_idx = int((i / len(text)) * num_colors)
+        color_key = color_keys[min(color_idx, num_colors - 1)]; result.append(f"{COLORS.get(color_key, '')}{char}")
+    return "".join(result) + COLORS['reset']
+
+def gini_progress_bar(progress_val: float, term_width: int, text_prefix: str, filename: str = ""):
+    actual_progress = min(1.0, max(0.0, progress_val)); text_part = f"{COLORS['bold']}{text_prefix}{COLORS['reset']}"; bar_actual_width = 30
+    filename_display = filename; plain_text_prefix = strip_ansi(text_part)
+    fixed_elements_len = len(plain_text_prefix) + len(" : [] ") + bar_actual_width + len(" 100.0%") 
+    max_filename_len_allowed = term_width - fixed_elements_len - (len(COLORS['yellow']) + len(COLORS['reset'])) 
+    if len(filename) > max_filename_len_allowed and max_filename_len_allowed > 5:
+        if max_filename_len_allowed < 7 : filename_display = filename[:max_filename_len_allowed]
+        else:
+            ellipsis_len = 3; chars_to_show = max_filename_len_allowed - ellipsis_len
+            if chars_to_show < 2: filename_display = filename[:max_filename_len_allowed]
+            else: first_part_len = chars_to_show // 2; second_part_len = chars_to_show - first_part_len; filename_display = filename[:first_part_len] + "..." + filename[-second_part_len:]
+    elif len(filename) > max_filename_len_allowed and max_filename_len_allowed > 0 : filename_display = filename[:max_filename_len_allowed-3]+"..."
+    filename_part = f"{COLORS['yellow']}{filename_display}{COLORS['reset']}"; filled = int(bar_actual_width * actual_progress); empty = bar_actual_width - filled
+    bar_viz = (f"{COLORS['cyan']}{'●' * filled}{COLORS['reset']}"f"{'○' * empty}")
+    line_content = f"{text_part} {filename_part}: [{bar_viz}] {actual_progress*100:>5.1f}%"
+    sys.stdout.write(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{line_content}"); sys.stdout.flush()
+
+def print_step(current_step_str: str, total_steps_str: str, message: str, status: str = "info", indent: bool = False):
+    prefix = "  " if indent else ""; symbol = STATUS_SYMBOLS.get(status, STATUS_SYMBOLS["info"])
+    progress_indicator = f"{COLORS['purple']}[{current_step_str}/{total_steps_str}]{COLORS['reset']}"
+    sys.stdout.write(f"{prefix}{symbol} {progress_indicator} {message}\n"); sys.stdout.flush()
+
+def sanitize_filename(filename: str) -> str:
+    name = filename.strip().lstrip('.'); sane_name = "".join(c if c.isalnum() or c in ('.', '_', '-', ' ') else '_' for c in name)
+    sane_name = "_".join(filter(None, sane_name.replace(" ", "_").split('_'))); return sane_name if sane_name else "downloaded_file"
+
+class NoRedirection(urllib.request.HTTPErrorProcessor):
+    def http_response(self, request, response): return response
+    https_response = http_response
+
+def get_args():
+    parser = argparse.ArgumentParser(description=f"{gradient_text('CivitAI Smart Downloader (Gini Styled)', ['pink', 'purple', 'cyan'])}",formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('urls', metavar='URL', type=str, nargs='+', help=f"{COLORS['cyan']}One or more CivitAI URLs (Model, Version, or Image){COLORS['reset']}")
+    parser.add_argument('output_path', type=str, help=f"{COLORS['cyan']}Base ComfyUI 'models' directory path{COLORS['reset']}") 
+    parser.add_argument('--token', '-t', type=str, default=None, help=f"{COLORS['cyan']}CivitAI API Token (optional){COLORS['reset']}")
+    parser.add_argument('--filename', '-f', type=str, default=None, help=f"{COLORS['cyan']}Override filename (only if ONE specific version URL is given AND no selection list is generated){COLORS['reset']}")
+    parser.add_argument('--parallel', '-p', type=int, default=DOWNLOAD_THREADS_DEFAULT, help=f"{COLORS['cyan']}Number of parallel download threads (default: {DOWNLOAD_THREADS_DEFAULT}).{COLORS['reset']}")
+    return parser.parse_args()
+
+def _api_request(url: str, token: str or None, step_ctx:str = "*", is_image_api: bool = False):
+    headers = {'User-Agent': USER_AGENT, 'Content-Type': 'application/json'}
+    if token and not is_image_api : 
+         headers['Authorization'] = f'Bearer {token}'
+    print_step(step_ctx,step_ctx, f"API Request: {COLORS['light_blue']}{url[:80]}{'...' if len(url)>80 else ''}{COLORS['reset']}...", "info", indent=True)
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as response:
+            if response.status == 200: print_step(step_ctx,step_ctx, f"API Request {COLORS['green']}successful (200 OK).{COLORS['reset']}", "success", indent=True); return json.loads(response.read().decode())
+            else: print_step(step_ctx,step_ctx, f"API Request failed (Status: {response.status}).", "warning", indent=True); return None
+    except Exception as e: print_step(step_ctx,step_ctx, f"API Request error: {e}.", "error", indent=True); return None
+
+def fetch_model_summary_and_versions(model_id: str, token: str or None):
+    url = f"{CIVITAI_API_V1_BASE_URL}/models/{model_id}"; return _api_request(url, token, step_ctx="M")
+def fetch_specific_model_version_details(model_version_id: str, token: str or None):
+    url = f"{CIVITAI_API_V1_BASE_URL}/model-versions/{model_version_id}"; return _api_request(url, token, step_ctx="V")
+def fetch_image_metadata(image_id: str, token: str or None):
+    url = f"{CIVITAI_API_V1_BASE_URL}/images/{image_id}"
+    return _api_request(url, token, step_ctx="I", is_image_api=True) 
+
+def get_remote_file_info(url: str):
+    headers = {'User-Agent': USER_AGENT}; total_size, supports_range, content_disposition = None, False, None
+    print_step("*","*", f"Getting remote file info: {url[:80]}{'...' if len(url)>80 else ''}", "info", indent=True)
+    try: # HEAD
+        req = urllib.request.Request(url, headers=headers, method='HEAD')
+        with urllib.request.urlopen(req, timeout=CDN_INFO_TIMEOUT) as response: 
+            if response.status == 200:
+                total_size = int(response.getheader('Content-Length', -1)); supports_range = 'bytes' in response.getheader('Accept-Ranges', 'none').lower(); content_disposition = response.getheader('Content-Disposition')
+                print_step("*","*", f"HEAD: Size: {total_size/(1024**2):.2f}MB, Range: {supports_range}, CD: {content_disposition is not None}", "success", indent=True)
+                return total_size if total_size > 0 else None, supports_range, content_disposition
+    except Exception as e: print_step("*","*", f"HEAD error: {e}. Trying short GET.", "warning", indent=True)
+    headers['Range'] = 'bytes=0-0' 
+    try: # Short GET
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=CDN_INFO_TIMEOUT) as response: 
+            content_range_hdr = response.getheader('Content-Range'); supports_range = 'bytes' in response.getheader('Accept-Ranges', 'none').lower(); content_disposition = response.getheader('Content-Disposition')
+            if response.status == 206 and content_range_hdr and '/' in content_range_hdr: total_size = int(content_range_hdr.split('/')[-1])
+            elif response.status == 200:
+                 total_size = int(response.getheader('Content-Length', -1))
+                 if total_size == 1 and not supports_range : return None, False, content_disposition
+                 if total_size > 1 : supports_range = True 
+            if total_size and total_size > 0:
+                 print_step("*","*", f"Short GET: Size: {total_size/(1024**2):.2f}MB, Range: {supports_range}, CD: {content_disposition is not None}", "success", indent=True)
+                 return total_size, supports_range, content_disposition
+            else: print_step("*","*", f"Short GET failed (Status: {response.status})", "warning", indent=True); return None, False, content_disposition
+    except Exception as e: print_step("*","*", f"Short GET error: {e}", "error", indent=True)
+    return None, False, None
+
+segment_progress = [] 
+segment_success_flags = [] 
+segment_progress_lock = threading.Lock() 
+stop_event = threading.Event() 
+
+def download_segment_worker(segment_idx: int, url: str, part_filepath: Path, start_byte: int, end_byte: int, retry_limit: int = 2):
+    global segment_progress, segment_success_flags
+    headers = {'User-Agent': USER_AGENT, 'Range': f'bytes={start_byte}-{end_byte}'}
+    current_try = 0; downloaded_in_segment = 0; thread_name = threading.current_thread().name
+    segment_expected_size = end_byte - start_byte + 1
+    with segment_progress_lock: 
+        if len(segment_success_flags) > segment_idx: segment_success_flags[segment_idx] = False 
+        else: sys.stderr.write(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['error']} Error: segment_success_flags not initialized for segment {segment_idx}\n"); return
+    while current_try < retry_limit: 
+        if stop_event.is_set(): return 
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=60) as response: 
+                if response.status not in [200, 206]: raise urllib.error.HTTPError(url, response.status, f"Unexpected status {response.status} for seg {segment_idx}", response.headers, None)
+                if response.status == 206:
+                    content_range = response.getheader('Content-Range')
+                    if content_range:
+                        try:
+                            range_str, total_str = content_range.split('/'); current_range_str = range_str.split(' ')[1]
+                            resp_start, resp_end = map(int, current_range_str.split('-'))
+                            if resp_start != start_byte or resp_end != end_byte: raise ValueError(f"Server sent range {resp_start}-{resp_end} but expected {start_byte}-{end_byte}")
+                        except Exception as cr_e: sys.stderr.write(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['warning']} {thread_name} (Seg {segment_idx+1}) Content-Range mismatch: {cr_e}. Header: {content_range}\n")
+                with open(part_filepath, 'wb') as f: 
+                    while not stop_event.is_set():
+                        buffer = response.read(CHUNK_SIZE);
+                        if not buffer: break
+                        f.write(buffer); downloaded_in_segment += len(buffer)
+                        with segment_progress_lock: segment_progress[segment_idx] = downloaded_in_segment
+                    if stop_event.is_set() and part_filepath.exists(): part_filepath.unlink(missing_ok=True); return
+            if downloaded_in_segment >= segment_expected_size: 
+                with segment_progress_lock: segment_success_flags[segment_idx] = True
+                return 
+            else: raise ValueError(f"Segment {segment_idx+1} incomplete. Expected {segment_expected_size}, Got {downloaded_in_segment}")
+        except Exception as e: 
+            current_try += 1;
+            with segment_progress_lock: segment_progress[segment_idx] = 0 
+            if current_try >= retry_limit: 
+                sys.stderr.write(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['error']} {thread_name} (Seg {segment_idx+1}) failed after {retry_limit} retries: {e}\n")
+                if part_filepath.exists(): part_filepath.unlink(missing_ok=True)
+                return 
+            sys.stderr.write(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['warning']} {thread_name} (Seg {segment_idx+1}) Retrying ({current_try}/{retry_limit}). Error: {e}\n")
+            time.sleep(1 * current_try)
+    if part_filepath.exists(): part_filepath.unlink(missing_ok=True)
+    return 
+
+def execute_single_download_task(
+    model_version_id_for_api: str, 
+    base_comfyui_models_dir: Path, 
+    token: str or None,
+    user_supplied_filename: str or None, 
+    num_threads: int,
+    model_type_context: str or None,
+    model_name_context: str = None, 
+    version_name_context: str = None
+    ):
+    global segment_progress, segment_success_flags
+    total_steps_val = 5; current_major_step = 1; output_file_path_obj = None
+    effective_num_threads = num_threads 
+    task_label = f"{model_name_context} - {version_name_context}" if model_name_context and version_name_context else f"ModelVersionID {model_version_id_for_api}"
+    if not model_name_context and not version_name_context : task_label = f"ModelVersionID {model_version_id_for_api}"
+
+    try:
+        normalized_model_type = model_type_context.lower() if model_type_context else "unknown"
+        target_subdir_name = COMFYUI_MODEL_TYPE_TO_DIR.get(normalized_model_type, COMFYUI_MODEL_TYPE_TO_DIR["unknown_type_default"])
+        actual_save_directory = base_comfyui_models_dir / target_subdir_name
+        try: actual_save_directory.mkdir(parents=True, exist_ok=True)
+        except OSError as e: print_step("!", "!", f"Error creating dir {actual_save_directory}: {e}.", "error", indent=True); return False
+        
+        print_step("+", "+", f"Task: {COLORS['cyan']}{task_label}{COLORS['reset']} -> Dir: {COLORS['light_blue']}{target_subdir_name}{COLORS['reset']}", "info")
+
+        print_step(str(current_major_step), str(total_steps_val), "Preparing Download URL and Initial Filename")
+        filename_to_use = user_supplied_filename
+        api_download_url = f"{CIVITAI_API_DOWNLOAD_BASE_URL}{model_version_id_for_api}"
+        if not filename_to_use:
+            metadata = fetch_specific_model_version_details(str(model_version_id_for_api), token)
+            if metadata and isinstance(metadata.get('files'), list) and metadata['files']:
+                primary_file = next((f for f in metadata['files'] if f.get('primary')), metadata['files'][0] if metadata.get('files') else {})
+                if primary_file.get('name'): 
+                    filename_to_use = primary_file['name']
+                    print_step(str(current_major_step), str(total_steps_val), f"Filename from version metadata: {COLORS['yellow']}{filename_to_use}{COLORS['reset']}", "success", indent=True)
+        
+        current_major_step += 1
+        print_step(str(current_major_step), str(total_steps_val), f"Connecting to API: {api_download_url[:70]}...")
+        initial_api_headers = {'User-Agent': USER_AGENT};
+        if token: initial_api_headers['Authorization'] = f'Bearer {token}'
+        api_opener = urllib.request.build_opener(NoRedirection); api_req = urllib.request.Request(api_download_url, headers=initial_api_headers)
+        spinner_idx=0; connect_start_time=time.time(); api_initial_response=None
+        while time.time() - connect_start_time < 10:
+            sys.stdout.write(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{COLORS['pink']}{BRAILLE_SPINNER_CHARS[spinner_idx % len(BRAILLE_SPINNER_CHARS)]}{COLORS['reset']} Connecting to API... ")
+            sys.stdout.flush(); spinner_idx+=1
+            try: api_initial_response = api_opener.open(api_req, timeout=5); break
+            except urllib.error.URLError as e:
+                if "timed out" not in str(e).lower() and "timeout" not in str(e).lower(): raise
+            except Exception: raise; time.sleep(0.2)
+        sys.stdout.write(CLEAR_ENTIRE_LINE_AND_RETURN_ANSI); sys.stdout.flush()
+        if api_initial_response is None: print_step(str(current_major_step), str(total_steps_val), "API connection timed out.", "error", indent=True); api_initial_response = api_opener.open(api_req)
+        print_step(str(current_major_step), str(total_steps_val), f"API Response Status: {COLORS['green']}{api_initial_response.status}{COLORS['reset']}", "success", indent=True)
+        actual_cdn_url = api_download_url
+        if api_initial_response.status in [301, 302, 303, 307, 308]:
+            redirect_url = api_initial_response.getheader('Location');
+            if not redirect_url: raise Exception("API redirect missing 'Location' header.")
+            actual_cdn_url = redirect_url
+            print_step(str(current_major_step), str(total_steps_val), f"API redirected to CDN: {actual_cdn_url[:80]}{'...' if len(actual_cdn_url)>80 else ''}", "info", indent=True)
+        elif api_initial_response.status == 200: print_step(str(current_major_step), str(total_steps_val), "Downloading directly from API.", "info", indent=True); actual_cdn_url = api_initial_response.geturl()
+        elif api_initial_response.status in [401, 403]: raise Exception(f"API Auth Error ({api_initial_response.status}). Token:{token is not None}.")
+        elif api_initial_response.status == 404: raise Exception(f"API Not Found (404) for {api_download_url}")
+        else: raise Exception(f"API request failed. Status: {api_initial_response.status} {getattr(api_initial_response, 'reason', 'Unknown')}")
+
+        total_size, supports_range, cdn_content_disposition = get_remote_file_info(actual_cdn_url)
+
+        if not filename_to_use and cdn_content_disposition:
+            found_cd_filename = None; parts = cdn_content_disposition.split(';')
+            for part in parts:
+                part = part.strip()
+                if part.startswith('filename*='):
+                    try: encoding_name_val = part.split('filename*=')[1].strip("' "); encoding, _, encoded_fn = encoding_name_val.partition("''"); found_cd_filename = unquote(encoded_fn, encoding=encoding if encoding else 'utf-8'); break
+                    except: pass
+                elif part.startswith('filename='):
+                    try: found_cd_filename = unquote(part.split('filename=')[1].strip('" '))
+                    except: pass
+            if found_cd_filename: filename_to_use = found_cd_filename; print_step(str(current_major_step), str(total_steps_val), f"Filename from CDN CD: {COLORS['yellow']}{filename_to_use}{COLORS['reset']}", "success", indent=True)
+        
+        if not filename_to_use: filename_to_use = str(model_version_id_for_api); print_step(str(current_major_step), str(total_steps_val), f"Using ModelVersionID as filename: {filename_to_use}", "info", indent=True)
+            
+        final_filename_str = sanitize_filename(filename_to_use)
+        output_file_path_obj = actual_save_directory / final_filename_str
+        
+        # --- Pre-Download Existence and Corruption Check ---
+        if output_file_path_obj.exists() and output_file_path_obj.is_file():
+            local_file_size = output_file_path_obj.stat().st_size
+            is_safetensor_file = final_filename_str.lower().endswith(".safetensors")
+            safetensor_header_ok = False
+
+            if is_safetensor_file:
+                if SAFETENSORS_AVAILABLE:
+                    try:
+                        with safe_open(output_file_path_obj, framework="pt", device="cpu") as f_st:
+                            _ = f_st.metadata() # Try to read metadata
+                        safetensor_header_ok = True
+                        print_step(str(current_major_step), str(total_steps_val), 
+                                   f"Local safetensor '{COLORS['yellow']}{output_file_path_obj.name}{COLORS['reset']}' header is valid.", "info", indent=True)
+                    except Exception as st_e: # Catches SafetensorError, etc.
+                        print_step(str(current_major_step), str(total_steps_val), 
+                                   f"Local safetensor '{COLORS['yellow']}{output_file_path_obj.name}{COLORS['reset']}' appears corrupt: {str(st_e)[:100]}...", "error", indent=True)
+                        # Ask user if they want to delete and redownload
+                        while True:
+                            action = input(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['query']} Corrupt local file found. Delete and re-download (d) or Abort (a)? ").lower()
+                            if action == 'd':
+                                try: output_file_path_obj.unlink(); print_step("!", "!", "Deleted corrupt local file.", "warning", indent=True)
+                                except Exception as del_e: print_step("!", "!", f"Could not delete corrupt file: {del_e}", "error", indent=True); return False # Critical, can't proceed
+                                break # Proceed to download
+                            elif action == 'a':
+                                typing_effect(f"{STATUS_SYMBOLS['warning']} Download aborted due to corrupt local file.", 0.01, "yellow"); return False
+                            else: typing_effect("Invalid choice.", 0.01, "red")
+                        safetensor_header_ok = False # Force re-download by making it seem like it's not okay
+                else: # safetensors library not available
+                    print_step(str(current_major_step), str(total_steps_val), 
+                               "Safetensors library not found. Cannot perform corruption check. Checking size only.", "warning", indent=True)
+                    safetensor_header_ok = True # Assume okay for size check if library missing
+
+            if (is_safetensor_file and safetensor_header_ok) or not is_safetensor_file:
+                if total_size is not None: 
+                    if local_file_size == total_size:
+                        print_step(str(current_major_step), str(total_steps_val), 
+                                   f"File '{COLORS['yellow']}{output_file_path_obj.name}{COLORS['reset']}' already exists with correct size ({local_file_size / (1024**2):.2f}MB) in '{COLORS['light_blue']}{target_subdir_name}{COLORS['reset']}'. Skipping.", 
+                                   "success")
+                        return True 
+                    else: # Size differs, fall through to resume logic
+                        print_step(str(current_major_step), str(total_steps_val), 
+                                   f"File '{COLORS['yellow']}{output_file_path_obj.name}{COLORS['reset']}' exists but size differs (Local: {local_file_size / (1024**2):.2f}MB, Remote: {total_size / (1024**2):.2f}MB). Checking for resume.", 
+                                   "warning", indent=True)
+                else: # Remote size is unknown, but local file exists (and header is okay if safetensor)
+                    print_step(str(current_major_step), str(total_steps_val), 
+                               f"File '{COLORS['yellow']}{output_file_path_obj.name}{COLORS['reset']}' already exists in '{COLORS['light_blue']}{target_subdir_name}{COLORS['reset']}' (Remote size unknown). Skipping.", 
+                               "info") 
+                    return True 
+        # --- END Pre-Download Existence and Corruption Check ---
+
+
+        if total_size is None:print_step(str(current_major_step), str(total_steps_val), "No file size. Parallel disabled.", "warning", indent=True); effective_num_threads = 1
+        elif not supports_range and effective_num_threads > 1: print_step(str(current_major_step), str(total_steps_val), "No Range support. Parallel disabled.", "warning", indent=True); effective_num_threads = 1
+        elif total_size < (MIN_SIZE_FOR_PARALLEL_MB * 1024 * 1024) and effective_num_threads > 1: print_step(str(current_major_step), str(total_steps_val), f"File < {MIN_SIZE_FOR_PARALLEL_MB}MB. Single thread.", "info", indent=True); effective_num_threads = 1
+        
+        current_major_step += 1; print_step(str(current_major_step), str(total_steps_val), "Checking resumable state")
+        initial_downloaded_bytes_single_file = 0; file_open_mode = 'wb'; attempt_single_thread_resume = False; part_files_exist = False
+        if effective_num_threads > 1:
+            for i in range(effective_num_threads):
+                if (actual_save_directory / f"{output_file_path_obj.name}.part{i}").exists(): part_files_exist = True; break
+        
+        if output_file_path_obj.exists() and output_file_path_obj.is_file() and not part_files_exist:
+            partial_size_mb = output_file_path_obj.stat().st_size / (1024**2)
+            while True: 
+                action = input(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['query']} Existing file '{output_file_path_obj.name}' ({partial_size_mb:.2f} MB in {target_subdir_name}) seems incomplete. Resume (r), Restart (s), Abort (a)? ").lower()
+                if action == 'r': initial_downloaded_bytes_single_file = output_file_path_obj.stat().st_size; file_open_mode = 'ab'; attempt_single_thread_resume = True; effective_num_threads = 1; print_step(str(current_major_step), str(total_steps_val), f"Resuming single-threaded from {initial_downloaded_bytes_single_file / (1024**2):.2f} MB.", "info", indent=True); break
+                elif action == 's': output_file_path_obj.unlink(missing_ok=True); print_step(str(current_major_step), str(total_steps_val), "Restarting download.", "info", indent=True); initial_downloaded_bytes_single_file = 0; file_open_mode = 'wb'; break
+                elif action == 'a': typing_effect(f"{STATUS_SYMBOLS['warning']} Download aborted.", 0.01, "yellow"); return False 
+                else: typing_effect("Invalid choice.", 0.01, "red")
+        elif part_files_exist:
+             while True:
+                action = input(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['query']} Partial segment files found for '{output_file_path_obj.name}' in {target_subdir_name}. Restart parallel (s), Abort (a)? ").lower()
+                if action == 's':
+                    print_step(str(current_major_step), str(total_steps_val), "Restarting parallel, removing old parts.", "info", indent=True)
+                    for i in range(effective_num_threads): (actual_save_directory / f"{output_file_path_obj.name}.part{i}").unlink(missing_ok=True)
+                    if output_file_path_obj.exists(): output_file_path_obj.unlink(missing_ok=True); break
+                elif action == 'a': typing_effect(f"{STATUS_SYMBOLS['warning']} Download aborted.", 0.01, "yellow"); return False
+                else: typing_effect("Invalid choice.", 0.01, "red")
+        
+        current_major_step += 1; print_step(str(current_major_step), str(total_steps_val), f"Final Target: {COLORS['green']}{str(output_file_path_obj)}{COLORS['reset']}")
+        current_major_step += 1; print_step(str(current_major_step), str(total_steps_val), f"Starting download ({effective_num_threads} thread{'s' if effective_num_threads > 1 else ''})")
+        stop_event.clear(); start_time_session = time.time()
+
+        if effective_num_threads > 1 and total_size and supports_range:
+            segment_size = total_size // effective_num_threads; threads = []
+            segment_progress = [0] * effective_num_threads 
+            segment_success_flags = [False] * effective_num_threads 
+            part_files = []
+
+            for i in range(effective_num_threads):
+                start_byte = i * segment_size; end_byte = start_byte + segment_size - 1
+                if i == effective_num_threads - 1: end_byte = total_size - 1
+                part_filepath = actual_save_directory / f"{output_file_path_obj.name}.part{i}"; part_files.append(part_filepath)
+                thread = threading.Thread(name=f"Segment-{i}", target=download_segment_worker, args=(i, actual_cdn_url, part_filepath, start_byte, end_byte)); threads.append(thread); thread.start()
+            
+            all_threads_done = False; total_downloaded_parallel = 0; term_width_for_bar = get_terminal_width()
+            while not all_threads_done:
+                if stop_event.is_set(): break 
+                with segment_progress_lock: total_downloaded_parallel = sum(segment_progress)
+                prog_val = total_downloaded_parallel / total_size if total_size else 0; elapsed_time = time.time() - start_time_session
+                speed = (total_downloaded_parallel / (1024**2)) / elapsed_time if elapsed_time > 0 else 0
+                gini_progress_bar(prog_val, term_width_for_bar, f"DL {speed:.2f} MB/s", output_file_path_obj.name)
+                all_threads_done = not any(t.is_alive() for t in threads)
+                if all_threads_done: break
+                time.sleep(0.2)
+            
+            sys.stdout.write(f"\n{CLEAR_LINE_FROM_CURSOR_ANSI}");
+            if stop_event.is_set(): raise KeyboardInterrupt 
+            
+            all_segments_truly_successful = True
+            for t_idx, t in enumerate(threads): 
+                t.join() 
+                with segment_progress_lock: 
+                    if not segment_success_flags[t_idx]:
+                        all_segments_truly_successful = False
+            
+            if not all_segments_truly_successful: 
+                print_step(str(current_major_step),str(total_steps_val), "One or more segments failed to download completely. Cleaning parts.", "error")
+                for pf in part_files: pf.unlink(missing_ok=True) 
+                raise Exception("Parallel download failed due to segment errors.")
+
+            print_step(str(current_major_step), str(total_steps_val), "Assembling parts...", "info")
+            with open(output_file_path_obj, 'wb') as final_file:
+                for pf_path in part_files:
+                    if pf_path.exists():
+                        with open(pf_path, 'rb') as pf_content: shutil.copyfileobj(pf_content, final_file)
+                        pf_path.unlink(missing_ok=True)
+                    else: raise Exception(f"Part file {pf_path.name} missing during assembly (should have been caught by success flags).")
+        else: # Single-Thread
+            cdn_req_headers = {'User-Agent': USER_AGENT}
+            if attempt_single_thread_resume and initial_downloaded_bytes_single_file > 0: cdn_req_headers['Range'] = f'bytes={initial_downloaded_bytes_single_file}-'
+            cdn_req_single = urllib.request.Request(actual_cdn_url, headers=cdn_req_headers); response = urllib.request.urlopen(cdn_req_single, timeout=60)
+            if attempt_single_thread_resume:
+                if response.status == 206: print_step(str(current_major_step), str(total_steps_val), "Server accepted Range (206). Resuming.", "success", indent=True)
+                elif response.status == 200:
+                    print_step(str(current_major_step), str(total_steps_val), "Server sent full file (200). Restarting.", "warning", indent=True); initial_downloaded_bytes_single_file = 0; file_open_mode = 'wb'
+                    if output_file_path_obj.exists(): output_file_path_obj.unlink(missing_ok=True)
+                else: print_step(str(current_major_step), str(total_steps_val), f"Unexpected status ({response.status}). Restarting.", "warning", indent=True); initial_downloaded_bytes_single_file = 0; file_open_mode = 'wb'
+            if total_size is None and response.status == 200 : total_size_str = response.getheader('Content-Length');
+            if total_size_str: total_size = int(total_size_str)
+            downloaded_this_session = 0; term_width_for_bar = get_terminal_width()
+            with open(output_file_path_obj, file_open_mode) as f:
+                last_print_time = time.time()
+                while not stop_event.is_set():
+                    buffer = response.read(CHUNK_SIZE)
+                    if not buffer: break
+                    downloaded_this_session += len(buffer); f.write(buffer); current_time = time.time()
+                    if current_time - last_print_time > 0.1 or (total_size and (initial_downloaded_bytes_single_file + downloaded_this_session) >= total_size):
+                        current_total_dl = initial_downloaded_bytes_single_file + downloaded_this_session
+                        if total_size:
+                            prog_val = current_total_dl / total_size; el_time = current_time - start_time_session
+                            speed = (downloaded_this_session / (1024**2)) / el_time if el_time > 0 else 0
+                            gini_progress_bar(prog_val, term_width_for_bar, f"DL {speed:.2f} MB/s", output_file_path_obj.name)
+                        else: sys.stdout.write(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}DL {output_file_path_obj.name}: {(current_total_dl) / (1024**2):.2f} MB...");
+                        sys.stdout.flush(); last_print_time = current_time
+                        if total_size and current_total_dl >= total_size: break 
+            if downloaded_this_session > 0 or initial_downloaded_bytes_single_file > 0 : sys.stdout.write(f"\n{CLEAR_LINE_FROM_CURSOR_ANSI}")
+            if stop_event.is_set(): raise KeyboardInterrupt
+        
+        final_downloaded_size = output_file_path_obj.stat().st_size if output_file_path_obj.exists() else 0
+        if total_size is not None and final_downloaded_size != total_size:
+            print_step("!", "!", f"CRITICAL: Final file size ({final_downloaded_size / (1024**2):.2f}MB) does NOT match expected size ({total_size / (1024**2):.2f}MB). File is corrupt or incomplete!", "error")
+            return False 
+        elif total_size is None and final_downloaded_size == 0 and not (attempt_single_thread_resume and initial_downloaded_bytes_single_file > 0):
+             print_step("!", "!", "Warning: Downloaded 0 bytes and remote size was unknown. File might be empty or download failed.", "warning")
+        
+        end_time = time.time(); time_taken_session = end_time - start_time_session
+        hours, rem = divmod(time_taken_session, 3600); mins, secs = divmod(rem, 60)
+        time_str = f"{int(hours)}h {int(mins)}m {int(secs)}s" if hours > 0 else (f"{int(mins)}m {int(secs)}s" if mins > 0 else f"{secs:.2f}s")
+        size_mb_str = f"{final_downloaded_size / (1024**2):.2f} MB"
+        if total_size : size_mb_str += f" / {total_size / (1024**2):.2f} MB"
+        final_msg_status = "success"; final_msg_title_text = "Download Complete!"
+        if total_size and final_downloaded_size < total_size: final_msg_status = "warning"; final_msg_title_text = "Download Incomplete!"
+        
+        final_msg_title = f"{STATUS_SYMBOLS[final_msg_status]} {COLORS['bold']}{final_msg_title_text}{COLORS['reset']}"
+        final_msg = (f"{final_msg_title}\n {STATUS_SYMBOLS['info']} File: {COLORS['yellow']}{str(output_file_path_obj)}{COLORS['reset']}\n"
+                     f"  {STATUS_SYMBOLS['info']} Size: {size_mb_str}\n  {STATUS_SYMBOLS['info']} Time this session: {COLORS['green']}{time_str}{COLORS['reset']}")
+        sys.stdout.write(final_msg + '\n'); typing_effect(gradient_text("✨ Thank you! ✨", ["pink", "purple", "cyan"]), 0.02)
+        return True
+    except KeyboardInterrupt:
+        stop_event.set()
+        if 'threads' in locals() and isinstance(threads, list) and any(t.is_alive() for t in threads):
+            sys.stderr.write(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['warning']} Interrupted! Waiting for segments...\n")
+            for t in threads: t.join(timeout=0.5) 
+        sys.stdout.write(f"\n{CLEAR_LINE_FROM_CURSOR_ANSI}")
+        typing_effect(f"{STATUS_SYMBOLS['warning']} Download task for '{task_label}' interrupted.", 0.01, "yellow")
+        is_parallel_task = 'effective_num_threads' in locals() and effective_num_threads > 1
+        if output_file_path_obj and output_file_path_obj.exists() and output_file_path_obj.stat().st_size > 0 and not is_parallel_task:
+            typing_effect(f"{STATUS_SYMBOLS['info']} Partial file saved: {str(output_file_path_obj)}", 0.01, "light_blue")
+        elif is_parallel_task and 'actual_save_directory' in locals() and output_file_path_obj : 
+             typing_effect(f"{STATUS_SYMBOLS['info']} Partial segment files for {output_file_path_obj.name} may exist in {actual_save_directory}.", 0.01, "light_blue")
+        return False 
+    except Exception as e:
+        sys.stdout.write(f"\n{CLEAR_LINE_FROM_CURSOR_ANSI}")
+        typing_effect(f"{STATUS_SYMBOLS['error']} {COLORS['red']}{COLORS['bold']}ERROR ({task_label}):{COLORS['reset']} {e}", 0.01, "red")
+        # import traceback; traceback.print_exc()
+        return False
+    # --- End of execute_single_download_task body ---
+
+# --- Orchestration Functions (present_unified_selection_and_download, handle_image_url, main_orchestrator) ---
+# These should be copied verbatim from the previous complete script (v3.4)
+def present_unified_selection_and_download( 
+    collected_versions: dict, base_comfyui_models_dir: Path, token: str or None, num_threads: int
+    ):
+    if not collected_versions: typing_effect(f"{STATUS_SYMBOLS['warning']} No model versions found.", 0.01, "yellow"); return
+    version_list = list(collected_versions.values())
+    print(f"\n{COLORS['bold']}Collected Model Versions ({len(version_list)} total):{COLORS['reset']}")
+    for i, ver_data in enumerate(version_list):
+        base_model_info = f"[{COLORS['cyan']}{ver_data.get('base_model_name', 'Unknown Model')}{COLORS['reset']} ({COLORS['light_blue']}{ver_data.get('base_model_type', 'N/A')}{COLORS['reset']})]"
+        version_name_info = f"{COLORS['green']}{ver_data.get('version_name', f'Version {i+1}')}{COLORS['reset']}"
+        file_name = ver_data.get('primary_file_name', "Unknown filename"); size_kb = ver_data.get('primary_file_size_kb', 0); size_mb = size_kb / 1024
+        file_format = ver_data.get('primary_file_format', 'N/A'); file_info_str = f"- File: {COLORS['yellow']}{file_name}{COLORS['reset']} ({size_mb:.2f}MB, {file_format})"
+        trained_words = ", ".join(ver_data.get('trained_words', [])); trained_words_str = f" TW: {COLORS['grey']}{trained_words[:50]}{'...' if len(trained_words)>50 else ''}{COLORS['reset']}" if trained_words else ""
+        print(f"  {COLORS['purple']}{i+1}{COLORS['reset']}. {base_model_info} - {version_name_info} {file_info_str}{trained_words_str}")
+
+    selected_indices = []
+    while True: 
+        print(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['query']} Enter version numbers to download (e.g., 1,3-5 or all), or 'q' to quit: ", end=""); sys.stdout.flush()
+        choice_str = input().lower().strip()
+        if choice_str == 'q': typing_effect("Selection aborted.", 0.01, "yellow"); return
+        normalized_choice_str = re.sub(r'\s+', ',', choice_str) 
+        if normalized_choice_str == 'all': selected_indices = list(range(len(version_list))); break
+        try: 
+            temp_indices = [];
+            if not normalized_choice_str: typing_effect("No selection made.", 0.01, "yellow"); continue
+            for part in normalized_choice_str.split(','):
+                part = part.strip();
+                if not part: continue
+                if '-' in part: 
+                    start_str, end_str = part.split('-', 1)
+                    start = int(start_str); end = int(end_str)
+                    if start > end: typing_effect(f"Invalid range: {start}-{end}.", 0.01, "red"); raise ValueError("Invalid range")
+                    temp_indices.extend(range(start - 1, end))
+                else: temp_indices.append(int(part) - 1)
+            valid_indices = []
+            for idx in temp_indices:
+                if 0 <= idx < len(version_list) and idx not in valid_indices: valid_indices.append(idx)
+            selected_indices = sorted(valid_indices)
+            if not selected_indices and choice_str: raise ValueError("No valid selections.")
+            if selected_indices: break 
+            elif not choice_str : typing_effect("No selection made.", 0.01, "yellow"); continue
+        except ValueError as e: typing_effect(f"Invalid input format. Use numbers, commas, ranges (e.g., 1,3-5), 'all', or 'q'.", 0.01, "red"); continue
+    if not selected_indices: typing_effect("No versions selected.", 0.01, "yellow"); return
+
+    print_step("S", str(len(selected_indices)), f"Preparing to download {len(selected_indices)} selected version(s).", "info")
+    successful_downloads = 0
+    for i, idx in enumerate(selected_indices):
+        selected_version_data = version_list[idx]
+        model_type_for_subdir = selected_version_data.get('base_model_type', "Unknown") 
+        print(f"\n--- Downloading selection {i+1}/{len(selected_indices)} ---")
+        success = execute_single_download_task(str(selected_version_data['model_version_id']), base_comfyui_models_dir, token, selected_version_data.get('primary_file_name'), num_threads, model_type_context=model_type_for_subdir, model_name_context=selected_version_data.get('base_model_name'), version_name_context=selected_version_data.get('version_name'))
+        if success: successful_downloads +=1
+        elif len(selected_indices) > 1 and i < len(selected_indices) - 1: 
+            while True:
+                cont_choice = input(f"{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}{STATUS_SYMBOLS['query']} Previous download failed/aborted. Continue with next? (y/n): ").lower()
+                if cont_choice == 'y': break
+                elif cont_choice == 'n': typing_effect("Aborting remaining downloads.", 0.01, "yellow"); return
+    typing_effect(f"All selected download tasks processed. Successful: {successful_downloads}/{len(selected_indices)}.", 0.02, "green" if successful_downloads == len(selected_indices) else "yellow")
+
+
+def handle_image_url(image_id: str, token: str or None, collected_versions_to_display: dict):
+    print_step("IMG", image_id, f"Processing Image ID {image_id}. Fetching metadata...", "info", indent=True)
+    image_data = fetch_image_metadata(image_id, token) 
+    if not image_data: print_step("!", image_id, f"Could not fetch metadata for image ID {image_id}.", "warning", indent=True); return
+    resources = image_data.get('meta', {}).get('resources', [])
+    if not resources: print_step("=", image_id, f"No downloadable model resources found in image ID {image_id}.", "info", indent=True); return
+    print_step("=", image_id, f"Found {len(resources)} resources in image metadata. Adding to collection...", "info", indent=True)
+    for resource in resources:
+        model_version_id = str(resource.get('modelVersionId'))
+        model_name_from_res = resource.get('name', 'Unknown Model Name'); model_type_from_res = resource.get('type', 'Unknown Type')
+        if not model_version_id or model_version_id == "None": print_step("!", image_id, f"Skipping resource '{model_name_from_res}' (type: {model_type_from_res}) due to missing modelVersionId.", "warning", indent=True); continue
+        if model_version_id not in collected_versions_to_display:
+            print_step(">", image_id, f"Fetching details for resource: {model_name_from_res} (Version ID: {model_version_id})", "info", indent=True)
+            version_details = fetch_specific_model_version_details(model_version_id, token)
+            if version_details:
+                primary_file = next((f for f in version_details.get('files', []) if f.get('primary')), version_details.get('files', [{}])[0] if version_details.get('files') else {})
+                collected_versions_to_display[model_version_id] = {
+                    "model_version_id": model_version_id,
+                    "base_model_name": version_details.get('model',{}).get('name', model_name_from_res),
+                    "base_model_id": str(version_details.get('modelId', 'N/A')),
+                    "base_model_type": version_details.get('model',{}).get('type', model_type_from_res),
+                    "version_name": version_details.get('name', f"Version for {model_name_from_res}"),
+                    "primary_file_name": primary_file.get('name'), "primary_file_size_kb": primary_file.get('sizeKB'),
+                    "primary_file_format": primary_file.get('metadata',{}).get('format'),
+                    "trained_words": version_details.get('trainedWords', []) }
+            else: print_step("!", image_id, f"Failed to fetch full details for model version ID {model_version_id} from image resource.", "warning", indent=True)
+        else: print_step("=", image_id, f"Model version {model_version_id} ({model_name_from_res}) from image already collected.", "info", indent=True)
+
+def main_orchestrator():
+    args = get_args()
+    if isinstance(args.output_path, str) and (args.output_path.lower().startswith('http://') or args.output_path.lower().startswith('https://')) and (":" in args.output_path and "/" in args.output_path) :
+        typing_effect(f"{STATUS_SYMBOLS['error']} Error: Output path '{args.output_path}' looks like a URL.", 0.01, "red"); 
+        typing_effect(f"  Correct usage: python3 {sys.argv[0]} [OPTIONS] URL1 [URL2 ...] OUTPUT_PATH", 0.01, "yellow")
+        sys.exit(1)
+    welcome_title = gradient_text("=== CivitAI Smart Downloader (Gini Styled) ===", ["pink", "purple", "cyan"])
+    sys.stdout.write(f"\n{welcome_title}\n"); typing_effect("Parsing your request(s)...", 0.02, "cyan")
+    is_single_url_specific_version = False
+    if len(args.urls) == 1:
+        parsed_single_url = urlparse(args.urls[0]); path_parts_single = Path(parsed_single_url.path).parts
+        is_image_url_single = len(path_parts_single) >= 3 and path_parts_single[1].lower() == "images"
+        if not is_image_url_single and parsed_single_url.query and 'modelVersionId' in parse_qs(parsed_single_url.query): is_single_url_specific_version = True
+    effective_filename_override = args.filename
+    if not is_single_url_specific_version and args.filename:
+        print_step("!", "!", f"Warning: --filename ('{args.filename}') ignored unless a single, specific model version URL is provided.", "warning"); effective_filename_override = None
+    collected_versions_to_display = {} ; total_urls_to_process = len(args.urls)
+    for url_idx, input_url_str in enumerate(args.urls):
+        print_step(str(url_idx+1), str(total_urls_to_process), f"Processing URL: {COLORS['light_blue']}{input_url_str}{COLORS['reset']}")
+        parsed_url = urlparse(input_url_str); model_id = None; direct_model_version_id = None; image_id = None
+        if "civitai.com" in parsed_url.netloc:
+            path_parts = Path(parsed_url.path).parts
+            if len(path_parts) >= 3:
+                if path_parts[1].lower() == "models": model_id = path_parts[2]
+                elif path_parts[1].lower() == "images": image_id = path_parts[2]
+            if parsed_url.query: direct_model_version_id = parse_qs(parsed_url.query).get('modelVersionId', [None])[0]
+        if image_id: handle_image_url(image_id, args.token, collected_versions_to_display)
+        elif direct_model_version_id:
+            if direct_model_version_id not in collected_versions_to_display:
+                print_step(">", ">", f"Specific version ID {direct_model_version_id} found. Fetching details...", "info", indent=True)
+                version_details = fetch_specific_model_version_details(direct_model_version_id, args.token)
+                if version_details:
+                    primary_file = next((f for f in version_details.get('files', []) if f.get('primary')), version_details.get('files', [{}])[0] if version_details.get('files') else {})
+                    current_filename = primary_file.get('name')
+                    if is_single_url_specific_version and effective_filename_override: current_filename = effective_filename_override; print_step(">",">",f"Overriding filename to: {current_filename}.","info",indent=True)
+                    collected_versions_to_display[direct_model_version_id] = {"model_version_id": direct_model_version_id, "base_model_name": version_details.get('model',{}).get('name', f"Model for VID {direct_model_version_id}"), "base_model_id": str(version_details.get('modelId', model_id if model_id else 'N/A')), "base_model_type": version_details.get('model',{}).get('type', 'N/A'), "version_name": version_details.get('name', f"Version {direct_model_version_id}"), "primary_file_name": current_filename, "primary_file_size_kb": primary_file.get('sizeKB'), "primary_file_format": primary_file.get('metadata',{}).get('format'), "trained_words": version_details.get('trainedWords', []) }
+                else: print_step("!", "!", f"Failed to fetch details for version ID {direct_model_version_id}.", "warning", indent=True)
+            else: print_step("=", "=", f"Version ID {direct_model_version_id} already collected.", "info", indent=True)
+        elif model_id: 
+            if effective_filename_override and not is_single_url_specific_version : print_step("!", "!", f"Warning: --filename ('{args.filename}') ignored for base model URL '{input_url_str}'.", "warning")
+            print_step(">", ">", f"Base model ID {model_id} found. Fetching all versions...", "info", indent=True)
+            summary_data = fetch_model_summary_and_versions(model_id, args.token)
+            if summary_data and summary_data.get('modelVersions'):
+                base_model_name = summary_data.get('name', f"Model {model_id}"); base_model_type = summary_data.get('type', "Unknown Type")
+                for version_data in summary_data['modelVersions']:
+                    version_id = str(version_data['id'])
+                    if version_id not in collected_versions_to_display:
+                        primary_file = next((f for f in version_data.get('files', []) if f.get('primary')), version_data.get('files', [{}])[0] if version_data.get('files') else {})
+                        collected_versions_to_display[version_id] = {"model_version_id": version_id, "base_model_name": base_model_name, "base_model_id": model_id, "base_model_type": base_model_type, "version_name": version_data.get('name', f"Version {version_id}"), "primary_file_name": primary_file.get('name'), "primary_file_size_kb": primary_file.get('sizeKB'), "primary_file_format": primary_file.get('metadata',{}).get('format'), "trained_words": version_data.get('trainedWords', []) }
+                    else: print_step("=", "=", f"Version ID {version_id} (from {base_model_name}) already collected.", "info", indent=True)
+            else: print_step("!", "!", f"Failed to fetch versions for model ID {model_id}.", "warning", indent=True)
+        else: typing_effect(f"{STATUS_SYMBOLS['error']} Could not process URL: {input_url_str}", 0.01, "red")
+    present_unified_selection_and_download(collected_versions_to_display, Path(args.output_path), args.token, args.parallel)
+
+if __name__ == '__main__':
+    try: main_orchestrator()
+    except KeyboardInterrupt: 
+        stop_event.set(); sys.stdout.write(f"\n{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}"); 
+        typing_effect(f"{STATUS_SYMBOLS['warning']} Main process interrupted. Exiting.", 0.01, "yellow"); sys.exit(130)
+    except Exception as e:
+        sys.stdout.write(f"\n{CLEAR_ENTIRE_LINE_AND_RETURN_ANSI}"); 
+        typing_effect(f"{STATUS_SYMBOLS['error']} Critical error: {e}", 0.01, "red"); 
+        # import traceback; traceback.print_exc() 
+        sys.exit(1)

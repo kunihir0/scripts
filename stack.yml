@@ -1,0 +1,603 @@
+░▒▓     05:33       cat SteamLibrary/stack.yml 
+# Homelab Portainer Stack - Final Version
+# Includes Technitium DNS, Lancache (via Macvlan), NPM (IPv4-bind), and other services
+# Environment variables should be set directly in Portainer
+
+version: '3.8' # Using a slightly more modern version, 3.8 is widely compatible
+
+services:
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333" # gRPC port
+      - "6334:6334" # REST API port (optional, if you need to access it directly)
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - backend_network
+    environment:
+      - TZ=America/Phoenix
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:latest
+    container_name: lightrag
+    restart: unless-stopped
+    ports:
+      - 9621:9621
+    volumes:
+      - lightrag_rag_storage:/app/data/rag_storage
+      - lightrag_inputs:/app/data/inputs
+      - lightrag_config:/app/config.ini
+    networks:
+      - frontend_network
+      - backend_network
+    environment:
+      - LLM_BINDING=ollama
+      - LLM_BINDING_HOST=http://ollama:11434
+      - LLM_MODEL=gemma3:27b
+      - EMBEDDING_BINDING=ollama
+      - EMBEDDING_MODEL=bge-m3:latest
+      - EMBEDDING_BINDING_HOST=http://ollama:11434
+      - EMBEDDING_DIM=1024
+  postgres-for-lightrag: # Naming it specifically for lightrag to avoid conflicts
+    image: postgres:16 # Or a specific version like shangor/postgres-for-rag if it bundles extensions LightRAG might favor
+    container_name: postgres-for-lightrag
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_LIGHTRAG_PORT:-5433}:5432" # Exposing on 5433 to avoid conflict if you have another Postgres on 5432
+    volumes:
+      - postgres_lightrag_data:/var/lib/postgresql/data
+    networks:
+      - backend_network
+    environment:
+      - POSTGRES_USER=${LIGHTRAG_DB_USER:-lightrag_user}
+      - POSTGRES_PASSWORD=${LIGHTRAG_DB_PASSWORD:-YourStrongPasswordHere}
+      - POSTGRES_DB=${LIGHTRAG_DB_NAME:-lightrag_db}
+      - TZ=America/Phoenix
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LIGHTRAG_DB_USER:-lightrag_user} -d ${LIGHTRAG_DB_NAME:-lightrag_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  searxng_perplexica: # Renamed for clarity within your stack
+    image: docker.io/searxng/searxng:latest
+    container_name: searxng-for-perplexica
+    restart: unless-stopped
+    volumes:
+      - perplexica_searxng_config:/etc/searxng:rw # Uses the new named volume
+    environment:
+      - TZ=America/Phoenix
+      # SearXNG typically doesn't need external port mapping if only Perplexica uses it.
+      # If you want to access SearXNG directly, you can add:
+      # ports:
+      #  - "4000:8080"
+    networks:
+      - backend_network # So Perplexica can reach it by 'searxng_perplexica:8080'
+
+  perplexica:
+    image: itzcrazykns1337/perplexica:main # Using the pre-built image
+    container_name: perplexica
+    restart: unless-stopped
+    ports:
+      - "3000:3000" # Perplexica's web UI
+    volumes:
+      - /mnt/comfyui-data/docker_configs/perplexica/config.toml:/home/perplexica/config.toml:ro # Your prepared config file (read-only)
+      - perplexica_dbstore:/home/perplexica/data # Uses the new named volume
+      - perplexica_uploads:/home/perplexica/uploads # Uses the new named volume
+    environment:
+      - SEARXNG_API_URL=http://searxng_perplexica:8080 # Points to the SearXNG service above
+      - TZ=America/Phoenix
+    networks:
+      - frontend_network # For NPM access to Perplexica UI
+      - backend_network  # To access SearXNG and Ollama
+    depends_on:
+      - searxng_perplexica
+      - ollama
+  comfyui:
+    image: 192.168.1.54:5001/comfyui-rocm:latest
+    container_name: comfyui-rocm
+    restart: unless-stopped
+    ports:
+      - "8188:8188"
+    devices:
+      - /dev/kfd:/dev/kfd         # AMD ROCm kernel fusion driver
+      - /dev/dri:/dev/dri         # Direct Rendering Interface
+    group_add:
+      - "video"                   # Add container user to video group for GPU access
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - "seccomp=unconfined"
+      - "label=disable"           # This was in the original manual run command
+    volumes:
+      - /mnt/comfyui-data:/root   # Mount your prepared LVM volume here for persistent data
+                                  # Ensure /mnt/comfyui-data is formatted and mounted on your host.
+    environment:
+      - HSA_OVERRIDE_GFX_VERSION=10.3.0
+      - TZ=America/Phoenix        # Consistent timezone like your other services
+    networks:
+      - frontend_network          # For access via Nginx Proxy Manager
+      - backend_network           # For potential backend interactions
+  ollama:
+    # Service for running Ollama with AMD ROCm support
+    image: ollama/ollama:${OLLAMA_DOCKER_TAG-rocm} # Uses 'rocm' tag by default, can be overridden by OLLAMA_DOCKER_TAG env var
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    devices:
+      - /dev/kfd:/dev/kfd # AMD ROCm kernel fusion driver
+      - /dev/dri:/dev/dri # Direct Rendering Interface
+    volumes:
+      - ollama_data:/root/.ollama # Persistent storage for Ollama models and data
+    environment:
+      - 'HSA_OVERRIDE_GFX_VERSION=10.3.0' # Override GFX version, defaults to 11.0.0
+      - 'OLLAMA_DEBUG=1'
+      # - 'OLLAMA_NUM_PARALLEL=1' # Example: Limit parallel requests if needed
+      # - 'OLLAMA_MAX_LOADED_MODELS=1' # Example: Limit number of models loaded simultaneously
+    restart: always
+    security_opt: # For more fine-grained control if needed.
+      - "seccomp=unconfined"
+    shm_size: '8gb'
+    networks:
+      - backend_network
+  openwebui:
+    # Service for the Open WebUI frontend
+    # Using the :main image, which does not bundle Ollama, as we are providing a separate Ollama service.
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "2222:8080" # Expose Open WebUI on host port 3000, mapping to container port 8080
+    volumes:
+      - open-webui:/app/backend/data # Persistent storage for Open WebUI configuration
+    environment:
+      # Point Open WebUI to the Ollama service.
+      # 'ollama' is the service name of the Ollama container on the Docker network.
+      # 11434 is the default port for Ollama.
+      - 'OLLAMA_BASE_URL=http://ollama:11434'
+    restart: always
+    networks:
+      - frontend_network # Connect to the frontend network for external access
+      - backend_network
+  # Lancache Cache Server (Requires Macvlan)
+  lancache-cache:
+    image: lancachenet/monolithic:latest
+    container_name: lancache-cache
+    restart: unless-stopped
+    networks:
+      lancache_macvlan:
+        ipv4_address: 192.168.1.55 # Static IP assigned via Macvlan - MUST be unique on your LAN
+    environment:
+      - TZ=America/Phoenix # Set your timezone consistently
+      - CACHE_DISK_SIZE=1000g # Example: 1 TB disk cache size
+      - CACHE_INDEX_SIZE=500m # Example: 500 MB index size (RAM usage estimate)
+      - CACHE_MAX_AGE=3650d # Example: Keep cache items for 10 years unless space needed
+    volumes:
+      # IMPORTANT: Map '/data/cache' to a fast drive (SSD recommended) with sufficient space
+      - lancache_data:/data/cache
+      - lancache_logs:/data/logs # Optional: For persistent logs
+
+  # Technitium DNS Server (Handles DNS, Adblocking, Local Records, Lancache App)
+  dns-server:
+    container_name: technitium-dns-server
+    hostname: dns-server
+    image: technitium/dns-server:latest
+    ports:
+      - "192.168.1.54:53:53/udp"
+      - "192.168.1.54:53:53/tcp"
+      - "192.168.1.54:5380:5380/tcp" # Web UI (HTTP)
+      - "192.168.1.54:53443:53443/tcp" # Web UI (HTTPS - Enable in Technitium settings)
+      # - "192.168.1.54:853:853/tcp" # DNS-over-TLS
+      # - "192.168.1.54:853:853/udp" # DNS-over-QUIC
+      # - "192.168.1.54:443:443/tcp" # DNS-over-HTTPS (May conflict with NPM if not proxied)
+    environment:
+      - TZ=America/Phoenix
+      - DNS_SERVER_ADMIN_PASSWORD=${TECHNITIUM_ADMIN_PASSWORD:-ChangeThisDefaultPassword}
+      - DNS_SERVER_FORWARDERS=1.1.1.1,9.9.9.9
+      - DNS_SERVER_WEB_SERVICE_ENABLE_HTTPS=true
+    volumes:
+      - technitium_config:/etc/dns
+    networks:
+      - frontend_network
+      - backend_network
+    restart: unless-stopped
+    sysctls:
+      - net.ipv4.ip_local_port_range=1024 65000
+
+  # Terraria Game Server
+  terraria-server:
+    image: passivelemon/terraria-docker:terraria-latest
+    container_name: terraria-server
+    restart: unless-stopped
+    ports:
+      - "7777:7777/tcp" # Default Terraria port
+    volumes:
+      - ./terraria-data:/opt/terraria/config/
+    environment:
+      - WORLDNAME=Lain
+      - AUTOCREATE=3
+      - MAXPLAYERS=16
+      - TZ=America/Phoenix # Consistent timezone
+    networks:
+      - frontend_network # Connect if proxying via NPM
+
+  # Minecraft Game Server
+  minecraft:
+    image: itzg/minecraft-server:latest
+    container_name: minecraft-lain
+    tty: true
+    stdin_open: true
+    restart: unless-stopped
+    networks:
+      - frontend_network # Connect if proxying via NPM
+    ports:
+      - "25565:25565" # Default Minecraft port
+    environment:
+      - EULA=TRUE
+      - MEMORY=8192M # Adjust RAM as needed
+      - MOTD="§d☯§5 §lm§di§5n§de§5.§dx§5i§da§5o§dx§5a§di§5o§d.§5x§dy§5z §d☯\n§5⟡§d ༺ ᴘʀᴇꜱᴇɴᴛ ᴅᴀʏ. ᴘʀᴇꜱᴇɴᴛ ᴛɪᴍᴇ. ᴀɴᴅ ᴛʜᴇ ᴍɪɴᴇᴄʀᴀꜰᴛ ʏᴏᴜ ᴀʀᴇ ɪɴ. ༻ §5⟡\n§d🌸 §5ᴇᴠᴇʀʏᴏɴᴇ ɪꜱ ᴄᴏɴɴᴇᴄᴛᴇᴅ §d🌸"
+      - ICON=https://64.media.tumblr.com/avatar_af25ebd5372e_128.pnj
+      - USE_AIKAR_FLAGS=true
+      - TZ=America/Phoenix # Consistent timezone
+      - TYPE=PAPER # PaperMC for performance
+      - ENABLE_RCON=true
+      - RCON_PASSWORD=${MINECRAFT_RCON_PASSWORD:-changeThisPassword}
+      - OVERRIDE_SERVER_PROPERTIES=true
+      - DIFFICULTY=normal
+      - SPAWN_PROTECTION=0
+      - MAX_PLAYERS=20
+      - VIEW_DISTANCE=10
+      - SERVER_NAME="Lain's Wired Minecraft"
+      - VERSION=1.21.4 # Specify desired version
+    volumes:
+      - minecraft_data:/data
+
+  # Cloudflare Tunnel Client
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    environment:
+      - TUNNEL_TOKEN=${YOUR_CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - frontend_network
+      - backend_network
+
+  # Stirling PDF Tools
+  stirling-pdf:
+    image: docker.stirlingpdf.com/stirlingtools/stirling-pdf:latest
+    container_name: stirling-pdf
+    networks:
+      - frontend_network
+      - backend_network
+    ports:
+      - '1111:8080'
+    volumes:
+      - ./StirlingPDF/trainingData:/usr/share/tessdata
+      - ./StirlingPDF/extraConfigs:/configs
+      - ./StirlingPDF/customFiles:/customFiles/
+      - ./StirlingPDF/logs:/logs/
+      - ./StirlingPDF/pipeline:/pipeline/
+    environment:
+      - DOCKER_ENABLE_SECURITY=false
+      - LANGS=en_US
+      - TZ=America/Phoenix
+
+  # Vaultwarden Password Manager
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    networks:
+      - frontend_network
+      - backend_network
+    ports:
+      - "9999:80"
+    volumes:
+      - vaultwarden_data:/data/
+    environment:
+      - DOMAIN=https://vault.xiaoxaio.xyz
+      - SIGNUPS_ALLOWED=true
+      - TZ=America/Phoenix
+
+  # Nginx Proxy Manager (App)
+  npm-app:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: npm-app
+    restart: unless-stopped
+    networks:
+      - frontend_network
+      - backend_network
+    ports:
+      - '80:80'
+      - '443:443'
+      - '81:81'
+    environment:
+      - TZ=America/Phoenix
+      - DISABLE_IPV6='true'
+    volumes:
+      - npm_data:/data
+      - npm_letsencrypt:/etc/letsencrypt
+
+
+  # MySpeed Speedtest Tracker
+  myspeed:
+    image: germannewsmaker/myspeed:latest
+    container_name: MySpeed
+    restart: unless-stopped
+    networks:
+      - frontend_network
+      - backend_network
+    ports:
+      - "5216:5216"
+    volumes:
+      - myspeed_data:/myspeed/data
+    environment:
+      - TZ=America/Phoenix
+
+  # Coder Service
+  coder:
+    image: ghcr.io/coder/coder:${CODER_VERSION:-latest}
+    restart: unless-stopped
+    group_add:
+      - "949"
+    networks:
+      - backend_network
+      - frontend_network
+    ports:
+      - "7080:7080"
+    environment:
+      CODER_PG_CONNECTION_URL: "postgresql://${CODER_POSTGRES_USER:-coderuser}:${CODER_POSTGRES_PASSWORD:-coderpassword}@coder-db:5432/${CODER_POSTGRES_DB:-coderdb}?sslmode=disable"
+      CODER_HTTP_ADDRESS: "0.0.0.0:7080"
+      CODER_ACCESS_URL: "${CODER_ACCESS_URL}" # Ensure this is set in your .env file
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - coder_home:/home/coder
+    depends_on:
+      coder-db:
+        condition: service_healthy
+
+  # Coder Database
+  coder-db:
+    image: "postgres:latest"
+    restart: unless-stopped
+    networks:
+      - backend_network # Only needs to be on the backend network
+    environment:
+      POSTGRES_USER: ${CODER_POSTGRES_USER:-coderuser}
+      POSTGRES_PASSWORD: ${CODER_POSTGRES_PASSWORD:-coderpassword}
+      POSTGRES_DB: ${CODER_POSTGRES_DB:-coderdb}
+    volumes:
+      - coder_database:/var/lib/postgresql/data # Specific volume name
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${CODER_POSTGRES_USER:-coderuser} -d ${CODER_POSTGRES_DB:-coderdb}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Nextcloud File Sync & Share
+  nextcloud:
+    image: lscr.io/linuxserver/nextcloud:latest
+    container_name: nextcloud
+    networks:
+      - frontend_network
+      - backend_network
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/Phoenix
+    volumes:
+      - nextcloud_config:/config
+      - nextcloud_data:/data
+    ports:
+      - "4444:443"
+    restart: unless-stopped
+
+  # Immich Photo Management (Server)
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
+    container_name: immich-server
+    restart: always
+    networks:
+      - frontend_network
+      - backend_network
+    ports:
+      - '2283:2283'
+      - '3001:3001'
+    volumes:
+      - immich_uploads:/usr/src/app/upload
+      - /etc/localtime:/etc/localtime:ro
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-modeset:/dev/nvidia-modeset
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+    environment:
+      - DB_HOSTNAME=immich-database
+      - DB_USERNAME=${IMMICH_POSTGRES_USER:-immich}
+      - DB_PASSWORD=${IMMICH_POSTGRES_PASSWORD:-immich_password}
+      - DB_DATABASE_NAME=${IMMICH_POSTGRES_DB:-immich}
+      - REDIS_HOSTNAME=immich-redis
+      - MACHINE_LEARNING_URL=http://immich-machine-learning:3003
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - TZ=America/Phoenix
+    depends_on:
+      - immich-redis
+      - immich-database
+      - immich-machine-learning
+
+  # Immich Photo Management (Machine Learning)
+  immich-machine-learning:
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION:-release}
+    container_name: immich-machine-learning
+    restart: always
+    networks:
+      - backend_network
+    volumes:
+      - immich_model_cache:/cache
+
+  # Immich Photo Management (Redis Cache - using Valkey)
+  immich-redis:
+    image: docker.io/valkey/valkey:latest
+    container_name: immich-redis
+    restart: always
+    networks:
+      - backend_network
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Immich Photo Management (Database - using pgvector)
+  immich-database:
+    image: docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0
+    container_name: immich-database
+    restart: always
+    networks:
+      - backend_network
+    environment:
+      - POSTGRES_PASSWORD=${IMMICH_POSTGRES_PASSWORD:-immich_password}
+      - POSTGRES_USER=${IMMICH_POSTGRES_USER:-immich}
+      - POSTGRES_DB=${IMMICH_POSTGRES_DB:-immich}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+      - TZ=America/Phoenix
+    volumes:
+      - immich_database:/var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${IMMICH_POSTGRES_USER:-immich} -d ${IMMICH_POSTGRES_DB:-immich}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # SponsorBlock for Local Network (YouTube Ad Skip)
+  sponsorblock:
+    image: ghcr.io/dmunozv04/isponsorblocktv:latest
+    container_name: iSponsorBlockTV
+    restart: unless-stopped
+    networks:
+      - frontend_network
+      - backend_network
+    ports:
+      - "8888:8888"
+    volumes:
+      - sponsorblock_data:/app/data
+    environment:
+      - TZ=America/Phoenix
+
+  # Uptime Kuma Monitoring
+  uptime-kuma:
+    image: louislam/uptime-kuma:latest
+    container_name: uptime-kuma
+    volumes:
+      - uptime_kuma_data:/app/data
+    ports:
+      - 3006:3001
+    networks:
+      - frontend_network
+      - backend_network
+    restart: always
+    environment:
+      - TZ=America/Phoenix
+
+  # Frigate NVR
+  frigate:
+    container_name: frigate
+    privileged: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    image: ghcr.io/blakeblackshear/frigate:stable
+    shm_size: "512mb"
+    networks:
+      - frontend_network
+      - backend_network
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-modeset:/dev/nvidia-modeset
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - frigate_config:/config
+      - /mnt/frigate-data:/media/frigate
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 1000000000
+    ports:
+
+      - "8971:8971"
+    environment:
+      - FRIGATE_RTSP_PASSWORD=${FRIGATE_RTSP_PASSWORD:-password}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - TZ=America/Phoenix
+
+# Define Networks
+networks:
+  frontend_network:
+    driver: bridge
+  backend_network:
+    driver: bridge
+  lancache_macvlan:
+    driver: macvlan
+    driver_opts:
+      parent: enp42s0 # IMPORTANT: Replace with your Docker host's main physical network interface name
+    ipam:
+      config:
+        - subnet: 192.168.1.0/24 # IMPORTANT: Replace with your actual LAN subnet and gateway IP
+          gateway: 192.168.1.1
+          # ip_range: 192.168.1.240/28
+
+# Define Volumes
+volumes:
+  lancache_data:
+  lancache_logs:
+  technitium_config:
+  minecraft_data:
+  vaultwarden_data:
+  npm_data:
+  npm_letsencrypt:
+  npm_database:
+  myspeed_data:
+  coder_database:
+  coder_home:
+  nextcloud_config:
+  nextcloud_data:
+    driver_opts:
+      type: 'none'
+      o: 'bind'
+      device: '${NEXTCLOUD_DATA_LOCATION}'
+  immich_uploads:
+    driver_opts:
+      type: 'none'
+      o: 'bind'
+      device: '${UPLOAD_LOCATION}'
+  immich_database:
+  immich_model_cache:
+  sponsorblock_data:
+  uptime_kuma_data:
+  frigate_config:
+
+  open-webui:
+  ollama_data:
+
+  filebrowser_db_data:
+  perplexica_searxng_config: # For SearXNG configuration
+  perplexica_dbstore:      # For Perplexica database
+  perplexica_uploads:      # For Perplexica uploads
+  lightrag_rag_storage:
+  lightrag_inputs:
+  lightrag_config:
+  qdrant_data:
+  postgres_lightrag_data:
+  localai_models:
+  localai_images:
